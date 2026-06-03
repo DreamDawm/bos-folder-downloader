@@ -26,11 +26,13 @@ copy .env.example .env   # Windows cmd
 ## 使用
 
 ```bash
-uv run bos-download --prefix data/ --dest ./downloads
+uv run bos-download --prefix data/ --dest ./downloads              # 默认 3 线程
+uv run bos-download --prefix data/ --dest ./downloads --workers 5  # 自定义并发数
 ```
 
 - `--prefix` 要下载的文件夹前缀(以 `/` 结尾更直观,如 `data/`)
 - `--dest` 本地保存目录
 - `--bucket` 可选,覆盖 `BOS_BUCKET`
+- `--workers` 可选,并发下载线程数(默认 3);同一文件不会被多个线程同时下载
 
 中断后重复执行同一命令会自动从 `.part` 临时文件断点续传,已完成的文件会被跳过。
