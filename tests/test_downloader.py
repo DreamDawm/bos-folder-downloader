@@ -34,8 +34,10 @@ class FakeClient:
 
     def get_object(self, bucket, key, range=None):
         self.get_object_calls.append(range)
-        start = range[0] if range else 0
-        return SimpleNamespace(data=FakeData(self._full[start:]))
+        if range is None:
+            return SimpleNamespace(data=FakeData(self._full))
+        start, end = range[0], range[1]
+        return SimpleNamespace(data=FakeData(self._full[start : end + 1]))
 
 
 def test_full_download_creates_file_with_content(tmp_path: Path):
@@ -83,3 +85,12 @@ def test_progress_callback_receives_total(tmp_path: Path):
     )
     assert seen[-1] == (12, 12)
     assert all(total == 12 for _, total in seen)
+
+
+def test_empty_object_creates_empty_file(tmp_path: Path):
+    client = FakeClient(b"")
+    dest = tmp_path / "empty.txt"
+    download_object(client, "bkt", "empty", dest)
+    assert dest.exists()
+    assert dest.read_bytes() == b""
+    assert not (tmp_path / "empty.txt.part").exists()

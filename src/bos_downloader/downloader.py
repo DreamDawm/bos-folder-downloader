@@ -70,4 +70,6 @@ def download_object(
             if callable(close):
                 close()
 
+    if not part.exists():
+        part.touch()
     os.replace(part, dest)
