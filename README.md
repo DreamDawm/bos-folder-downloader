@@ -10,11 +10,18 @@ uv sync
 
 ## 配置
 
-复制 `.env.example` 为 `.env` 填入凭证,然后:
+复制 `.env.example` 为 `.env` 并填入凭证即可,程序启动时会自动加载它,**无需手动设置环境变量**:
 
 ```bash
-source .env
+# Windows / macOS / Linux 通用
+copy .env.example .env   # Windows cmd
+# 或 cp .env.example .env # macOS / Linux / Git Bash
 ```
+
+然后编辑 `.env` 填入真实的 AK / SK / endpoint / 桶名。
+
+> 也可以不使用 `.env`,改为在系统里设置同名环境变量(`BOS_ACCESS_KEY_ID` 等);
+> 已存在的真实环境变量优先级高于 `.env`。
 
 ## 使用
 

@@ -6,6 +6,7 @@ requires-python = ">=3.9"
 dependencies = [
     "bce-python-sdk>=0.9.71",
     "tqdm>=4.66",
+    "python-dotenv>=1.0",
 ]
 
 [project.scripts]
