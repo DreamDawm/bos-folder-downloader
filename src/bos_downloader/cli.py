@@ -15,10 +15,14 @@ from bos_downloader.lister import list_objects_under_prefix
 
 
 def local_relative_path(key: str, prefix: str) -> str:
-    """把远端 key 转成相对 prefix 的本地相对路径。
+    """把远端 key 转成本地相对路径,保留来源文件夹名。
+
+    从 prefix 下载的文件会落在 "prefix 最后一级文件夹/..." 下,而非直接
+    铺到目标根目录。例如 prefix="a/b/data/" 时 key "a/b/data/x.txt" 映射为
+    "data/x.txt"。空 prefix(整桶下载)则保留完整 key。
 
     key 必须位于 prefix 之下,否则抛 ValueError;
-    并拒绝包含 '..' 段的 key,防止写出目标目录。
+    并拒绝包含 '..'、绝对路径或反斜杠的 key,防止写出目标目录。
     """
     norm_prefix = prefix if prefix.endswith("/") or prefix == "" else prefix + "/"
     if norm_prefix and not key.startswith(norm_prefix):
@@ -33,6 +37,10 @@ def local_relative_path(key: str, prefix: str) -> str:
         raise ValueError(f"key {key!r} 解析出绝对路径段")
     if "\\" in rel:
         raise ValueError(f"key {key!r} 含非法的反斜杠路径段")
+    # 保留 prefix 的最后一级文件夹名作为本地根
+    base_folder = norm_prefix.rstrip("/").split("/")[-1]
+    if base_folder:
+        return f"{base_folder}/{rel}"
     return rel
 
 
