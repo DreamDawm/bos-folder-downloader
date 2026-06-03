@@ -19,3 +19,15 @@ def test_local_relative_path_rejects_key_not_under_prefix():
 def test_local_relative_path_rejects_parent_traversal():
     with pytest.raises(ValueError):
         local_relative_path("data/../../etc/passwd", "data/")
+
+
+def test_local_relative_path_rejects_absolute_remainder():
+    # key 去掉 prefix 后以 / 开头,会让 dest_root / rel 丢弃 dest_root
+    with pytest.raises(ValueError):
+        local_relative_path("data//etc/passwd", "data/")
+
+
+def test_local_relative_path_rejects_backslash_absolute():
+    # Windows 反斜杠绝对路径段也应拒绝
+    with pytest.raises(ValueError):
+        local_relative_path("data/\\\\server\\share", "data/")

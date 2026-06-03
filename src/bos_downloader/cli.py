@@ -24,8 +24,15 @@ def local_relative_path(key: str, prefix: str) -> str:
     if norm_prefix and not key.startswith(norm_prefix):
         raise ValueError(f"key {key!r} 不在 prefix {prefix!r} 之下")
     rel = key[len(norm_prefix):]
-    if ".." in rel.split("/"):
+    parts = rel.split("/")
+    if ".." in parts:
         raise ValueError(f"key {key!r} 含非法的 '..' 路径段")
+    # 拒绝绝对路径:rel 以 / 或 \ 开头,或含 Windows 反斜杠段,
+    # 否则 dest_root / rel 会丢弃 dest_root 写到目录之外
+    if rel.startswith("/") or rel.startswith("\\"):
+        raise ValueError(f"key {key!r} 解析出绝对路径段")
+    if "\\" in rel:
+        raise ValueError(f"key {key!r} 含非法的反斜杠路径段")
     return rel
 
 
