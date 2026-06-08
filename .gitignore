@@ -9,3 +9,4 @@ dist/
 docs/
 .coverage
 .codegraph/
+logs/
