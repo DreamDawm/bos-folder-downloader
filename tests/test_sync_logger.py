@@ -4,6 +4,17 @@ from pathlib import Path
 from bos_downloader.sync_logger import setup_logger
 
 
+def test_repeated_setup_does_not_leak_handlers(tmp_path: Path):
+    setup_logger(str(tmp_path / "logs"), stamp="20260608-120000")
+    logger = setup_logger(str(tmp_path / "logs"), stamp="20260608-120001")
+    assert len(logger.handlers) == 2
+    logger.info("第二次配置后仍可写 上传 1 个")
+    for h in logger.handlers:
+        h.flush()
+    second = tmp_path / "logs" / "bos-sync-20260608-120001.log"
+    assert "上传 1 个" in second.read_text(encoding="utf-8")
+
+
 def test_creates_log_file_and_writes(tmp_path: Path):
     logger = setup_logger(str(tmp_path / "logs"), stamp="20260608-120000")
     logger.info("组 data/sub 下载 3 个,上传 3 个,删除 3 个")

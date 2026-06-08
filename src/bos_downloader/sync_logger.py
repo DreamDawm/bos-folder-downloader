@@ -20,6 +20,8 @@ def setup_logger(logs_dir: str, stamp: str) -> logging.Logger:
 
     logger = logging.getLogger(_LOGGER_NAME)
     logger.setLevel(logging.INFO)
+    for handler in logger.handlers:
+        handler.close()
     logger.handlers.clear()
     logger.propagate = False
 
