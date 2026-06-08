@@ -1,33 +1,6 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## 项目概述
-
-百度 BOS(对象存储)文件夹下载器:给定桶内某个 prefix(文件夹),递归下载其下所有文件与子文件夹文件,带 tqdm 实时进度,支持断点续传。命令行入口为 `bos-download`。
-
-## 常用命令
-
-包管理用 **UV**(非 pip / venv 手工管理):
-
-```bash
-uv sync                          # 安装依赖(含 dev 组的 pytest)
-uv run pytest                    # 跑全部测试
-uv run pytest tests/test_downloader.py            # 单个测试文件
-uv run pytest tests/test_cli.py::test_local_relative_path_keeps_prefix_folder  # 单个测试
-uv run bos-download --prefix data/ --dest ./downloads   # 运行下载器(默认 3 线程)
-uv run bos-download --prefix data/ --dest ./downloads --bucket 其他桶名  # 覆盖默认桶
-uv run bos-download --prefix data/ --dest ./downloads --workers 5  # 自定义并发线程数
-```
-
-凭证通过环境变量或 `.env` 提供(`python-dotenv` 自动加载,跨平台,无需 `source`):
-
-```bash
-cp .env.example .env    # Windows: copy .env.example .env,然后填入真实 AK/SK/endpoint/桶名
-```
-
-`.env` 必填键:`BOS_ACCESS_KEY_ID`、`BOS_SECRET_ACCESS_KEY`、`BOS_ENDPOINT`、`BOS_BUCKET`。
-
 ## 架构
 
 分层管线,每层单一职责,层间用 `typing.Protocol` 做鸭子类型解耦(便于测试时注入 Fake,而非依赖真实 BosClient)。数据流:
