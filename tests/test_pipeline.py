@@ -35,6 +35,11 @@ class FakeBos:
             metadata=SimpleNamespace(content_length=str(len(self._files[key])))
         )
 
+    def list_all_objects(self, bucket, prefix=None):
+        for key, data in self._files.items():
+            if prefix is None or key.startswith(prefix):
+                yield SimpleNamespace(key=key, size=len(data))
+
     def get_object(self, bucket, key, range=None):
         with self._lock:
             self.get_calls[key] = self.get_calls.get(key, 0) + 1
@@ -143,3 +148,72 @@ def test_process_group_download_failure_skips_upload(tmp_path: Path):
     assert result.failed > 0
     assert result.uploaded == 0
     assert sftp.put_calls == {}
+
+
+def _patch(monkeypatch, bos, sftp):
+    pool = FakePool(sftp)
+    monkeypatch.setattr(
+        pipeline, "load_config_from_env",
+        lambda: SimpleNamespace(bucket="bkt"),
+    )
+    monkeypatch.setattr(pipeline, "create_bos_client", lambda cfg: bos)
+    monkeypatch.setattr(
+        pipeline, "load_sftp_config_from_env",
+        lambda: SimpleNamespace(remote_base="/base"),
+    )
+    monkeypatch.setattr(pipeline, "ThreadLocalSftpPool", lambda cfg: pool)
+    return pool
+
+
+def test_run_processes_groups_serially_and_counts(tmp_path, monkeypatch):
+    bos = FakeBos({
+        "data/a.txt": b"aaaa",
+        "data/sub/b.txt": b"bbbb",
+        "data/sub/c.txt": b"cccc",
+    })
+    sftp = FakeSftp()
+    pool = _patch(monkeypatch, bos, sftp)
+
+    failures = pipeline.run(
+        "data/", str(tmp_path / "dl"),
+        logs_dir=str(tmp_path / "logs"), stamp="20260608-130000",
+        dl_workers=1, ul_workers=5,
+    )
+
+    assert failures == 0
+    assert pool.get().put_calls.get("/base/data/a.txt") == 1
+    assert pool.get().put_calls.get("/base/data/sub/b.txt") == 1
+    assert not (tmp_path / "dl" / "data" / "a.txt").exists()
+    assert not (tmp_path / "dl" / "data" / "sub" / "b.txt").exists()
+    assert pool.closed is True
+    log_text = (tmp_path / "logs" / "bos-sync-20260608-130000.log").read_text("utf-8")
+    assert "下载 3 个" in log_text
+    assert "上传 3 个" in log_text
+    assert "删除 3 个" in log_text
+
+
+def test_run_failed_group_keeps_local_and_continues(tmp_path, monkeypatch):
+    bos = FakeBos({"data/a.txt": b"aaaa", "data/sub/b.txt": b"bbbb"})
+    sftp = FakeSftp(failing_put={"/base/data/sub/b.txt"})
+    _patch(monkeypatch, bos, sftp)
+
+    failures = pipeline.run(
+        "data/", str(tmp_path / "dl"),
+        logs_dir=str(tmp_path / "logs"), stamp="20260608-140000",
+        dl_workers=1, ul_workers=2,
+    )
+
+    assert failures == 1
+    assert not (tmp_path / "dl" / "data" / "a.txt").exists()
+    assert (tmp_path / "dl" / "data" / "sub" / "b.txt").exists()
+
+
+def test_run_returns_zero_when_no_objects(tmp_path, monkeypatch):
+    bos = FakeBos({})
+    _patch(monkeypatch, bos, FakeSftp())
+
+    failures = pipeline.run(
+        "data/", str(tmp_path / "dl"),
+        logs_dir=str(tmp_path / "logs"), stamp="20260608-150000",
+    )
+    assert failures == 0
