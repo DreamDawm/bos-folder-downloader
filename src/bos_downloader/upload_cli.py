@@ -16,7 +16,7 @@ from bos_downloader.local_walker import LocalFile, walk_local_files
 from bos_downloader.sftp_client import ThreadLocalSftpPool
 from bos_downloader.uploader import upload_file
 
-DEFAULT_WORKERS = 3
+DEFAULT_WORKERS = 5
 
 
 def remote_relative_path(rel_path: str, source_folder_name: str) -> str:

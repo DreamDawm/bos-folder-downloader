@@ -14,7 +14,7 @@ from bos_downloader.config import load_config_from_env
 from bos_downloader.downloader import download_object
 from bos_downloader.lister import list_objects_under_prefix
 
-DEFAULT_WORKERS = 3
+DEFAULT_WORKERS = 1
 
 
 def local_relative_path(key: str, prefix: str) -> str:
