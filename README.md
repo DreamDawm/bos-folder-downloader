@@ -87,3 +87,21 @@ uv run bos-sync --prefix data/ --dest ./tmp --dl-workers 3 --ul-workers 8
 **失败处理**:某个目录组内任一文件下载或上传失败,则**保留**该组本地文件、
 记录到日志,并继续处理下一组;命令退出码为失败的组数。日志含每组与累计的
 「下载 N 个 / 上传 N 个 / 删除 N 个」便于校对。
+
+## JSONL 工具
+
+读取本地磁盘上的 JSONL 文件(每行一个 JSON 对象),支持统计、查看、搜索等操作:
+
+```bash
+uv run python scripts/jsonl_tool.py count data.jsonl                        # 统计总行数
+uv run python scripts/jsonl_tool.py count data.jsonl --filter status=done   # 按条件过滤统计
+uv run python scripts/jsonl_tool.py head data.jsonl 10                      # 前 10 行
+uv run python scripts/jsonl_tool.py head data.jsonl 10 --parse-meta         # 自动展开 JSON 字符串字段
+uv run python scripts/jsonl_tool.py head data.jsonl 10 --parse-meta-keys meta_info  # 仅展开指定字段
+uv run python scripts/jsonl_tool.py tail data.jsonl 10                      # 后 10 行
+uv run python scripts/jsonl_tool.py search data.jsonl status=error          # 搜索匹配行
+uv run python scripts/jsonl_tool.py search data.jsonl status=error --max 50 # 限制输出行数
+```
+
+- `--parse-meta` 自动检测并递归展开所有 JSON 字符串字段,便于查看内嵌元数据
+- `--parse-meta-keys KEY1,KEY2` 仅展开指定字段,其余 JSON 字符串保持原样
