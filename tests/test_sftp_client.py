@@ -258,6 +258,17 @@ def test_open_sftp_closes_transport_when_from_transport_returns_none(monkeypatch
     assert "secret" not in str(exc_info.value)
 
 
+def test_open_sftp_closes_transport_when_channel_is_missing(monkeypatch):
+    transport = FakeTransport()
+    fake_sftp = SimpleNamespace(get_channel=lambda: None)
+    _install_fakes(monkeypatch, transport, fake_sftp)
+
+    with pytest.raises(ConnectionError, match="SFTP channel unavailable"):
+        sftp_client.open_sftp(_cfg())
+
+    assert transport.close_calls == 1
+
+
 def test_open_sftp_closes_transport_when_channel_configuration_fails(monkeypatch):
     transport = FakeTransport()
     fake_sftp = FakeSftp(FakeChannel(error=OSError("channel timeout setup failed")))

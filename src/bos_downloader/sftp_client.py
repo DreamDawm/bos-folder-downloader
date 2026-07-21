@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import socket
 import threading
-from typing import List, Protocol
+from typing import List
 
 import paramiko
 
@@ -20,15 +20,6 @@ SSH_HANDSHAKE_TIMEOUT = 10.0
 SSH_AUTH_TIMEOUT = 10.0
 SFTP_CHANNEL_TIMEOUT = 30.0
 SSH_KEEPALIVE_INTERVAL = 30
-
-
-class SftpLike(Protocol):
-    """上传所需的最小 SFTP 接口,便于测试注入 Fake。"""
-
-    def stat(self, path): ...
-    def put(self, localpath, remotepath, callback=None, confirm=True): ...
-    def mkdir(self, path, mode=511): ...
-    def close(self): ...
 
 
 def open_sftp(cfg: SftpConfig) -> paramiko.SFTPClient:
@@ -54,7 +45,10 @@ def open_sftp(cfg: SftpConfig) -> paramiko.SFTPClient:
         sftp = paramiko.SFTPClient.from_transport(transport)
         if sftp is None:
             raise ConnectionError(f"无法建立到 {cfg.host}:{cfg.port} 的 SFTP 连接")
-        sftp.get_channel().settimeout(SFTP_CHANNEL_TIMEOUT)
+        channel = sftp.get_channel()
+        if channel is None:
+            raise ConnectionError("SFTP channel unavailable")
+        channel.settimeout(SFTP_CHANNEL_TIMEOUT)
     except Exception:
         if transport is None:
             sock.close()
