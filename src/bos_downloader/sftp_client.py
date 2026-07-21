@@ -22,6 +22,10 @@ SFTP_CHANNEL_TIMEOUT = 30.0
 SSH_KEEPALIVE_INTERVAL = 30
 
 
+class SftpPoolClosedError(RuntimeError):
+    """表示 SFTP 连接池已关闭,不能再获取连接。"""
+
+
 def _best_effort_close(resource: object) -> None:
     """尽力关闭资源。"""
     close = getattr(resource, "close", None)
@@ -89,7 +93,7 @@ class ThreadLocalSftpPool:
         """返回当前线程的 SFTPClient,首次访问时建连。"""
         with self._condition:
             if self._closed:
-                raise RuntimeError("SFTP 连接池已关闭")
+                raise SftpPoolClosedError("SFTP 连接池已关闭")
             client = cast(
                 Optional[paramiko.SFTPClient],
                 getattr(self._local, "client", None),
@@ -115,8 +119,8 @@ class ThreadLocalSftpPool:
                 if cleanup_error is not None:
                     self._all.append(client)
             if cleanup_error is not None:
-                raise RuntimeError("SFTP 连接池已关闭") from cleanup_error
-            raise RuntimeError("SFTP 连接池已关闭")
+                raise SftpPoolClosedError("SFTP 连接池已关闭") from cleanup_error
+            raise SftpPoolClosedError("SFTP 连接池已关闭")
         finally:
             with self._condition:
                 self._opening -= 1
