@@ -562,3 +562,115 @@ def test_close_all_closes_client_when_transport_close_fails(monkeypatch):
     assert str(exc_info.value) == "关闭 SFTP 连接失败"
     assert exc_info.value.__cause__ is transport_error
     assert events == ["transport", "client"]
+
+
+def test_close_all_retries_failed_client_without_reclosing_successful_clients(
+    monkeypatch,
+):
+    creation_lock = threading.Lock()
+    clients = []
+
+    def fake_open(cfg):
+        with creation_lock:
+            client = SimpleNamespace(close_calls=0)
+            clients.append(client)
+
+        def close():
+            client.close_calls += 1
+            if client is clients[0] and client.close_calls == 1:
+                raise RuntimeError("retry close failed")
+
+        client.close = close
+        return client
+
+    monkeypatch.setattr(sftp_client, "open_sftp", fake_open)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+
+    threads = [threading.Thread(target=pool.get) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(clients) == 2
+
+    with pytest.raises(RuntimeError, match="^关闭 SFTP 连接失败$"):
+        pool.close_all()
+
+    assert clients[0].close_calls == 1
+    assert clients[1].close_calls == 1
+    assert pool._all == [clients[0]]
+
+    pool.close_all()
+    assert clients[0].close_calls == 2
+    assert clients[1].close_calls == 1
+    assert pool._all == []
+
+    pool.close_all()
+    assert clients[0].close_calls == 2
+    assert clients[1].close_calls == 1
+
+
+def test_racing_client_cleanup_failure_is_retriable(monkeypatch):
+    open_started = threading.Event()
+    release_open = threading.Event()
+    thread_errors = []
+    cleanup_error = RuntimeError("new client cleanup failed")
+    client = SimpleNamespace(close_calls=0)
+
+    def close():
+        client.close_calls += 1
+        if client.close_calls == 1:
+            raise cleanup_error
+
+    client.close = close
+
+    def fake_open(cfg):
+        open_started.set()
+        assert release_open.wait(timeout=2)
+        return client
+
+    monkeypatch.setattr(sftp_client, "open_sftp", fake_open)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+
+    def worker():
+        try:
+            pool.get()
+        except Exception as exc:
+            thread_errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert open_started.wait(timeout=2)
+    pool.close_all()
+    release_open.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert len(thread_errors) == 1
+    assert str(thread_errors[0]) == "SFTP 连接池已关闭"
+    assert thread_errors[0].__cause__ is cleanup_error
+    assert pool._all == [client]
+
+    pool.close_all()
+    assert client.close_calls == 2
+    assert pool._all == []
+
+
+def test_open_sftp_preserves_original_error_when_cleanup_also_fails(monkeypatch):
+    transport = FakeTransport()
+    original_error = TimeoutError("handshake failed")
+    cleanup_error = OSError("transport cleanup failed")
+    transport.start_error = original_error
+
+    def fail_close():
+        raise cleanup_error
+
+    transport.close = fail_close
+    _install_fakes(monkeypatch, transport, FakeSftp())
+
+    with pytest.raises(TimeoutError) as exc_info:
+        sftp_client.open_sftp(_cfg())
+
+    assert exc_info.value is original_error
