@@ -9,8 +9,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import paramiko
+import pytest
+
 from bos_downloader import upload_cli
 from bos_downloader.local_walker import LocalFile
+from bos_downloader.sftp_client import SftpPoolClosedError
 from bos_downloader.upload_cancellation import UploadCancellation
 from bos_downloader.upload_progress import UploadProgress
 from bos_downloader.uploader import RemoteDirectoryCache
@@ -470,3 +474,57 @@ def test_postfix_includes_cancelled_count():
     upload_cli._update_postfix(bar, counts, UploadProgress(0))
 
     assert bar.postfix == {"完成": 1, "跳过": 2, "失败": 3, "取消": 4}
+
+
+def test_upload_one_keeps_permission_error_after_cancellation(tmp_path: Path, monkeypatch):
+    local_file = _make_local_file(tmp_path)
+    cancellation = UploadCancellation()
+    pool = FakePool(FakeSftp())
+
+    def fail_after_request(*args, **kwargs):
+        cancellation.request()
+        raise PermissionError("权限拒绝")
+
+    monkeypatch.setattr(upload_cli, "upload_file", fail_after_request)
+
+    outcome = _upload_one(pool, cancellation, local_file)
+
+    assert outcome.status == "failed"
+    assert outcome.error == "权限拒绝"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ConnectionError("连接关闭"), paramiko.SSHException("SSH 通道关闭")],
+)
+def test_upload_one_converts_cancelled_connection_errors(tmp_path: Path, monkeypatch, error):
+    local_file = _make_local_file(tmp_path)
+    cancellation = UploadCancellation()
+    pool = FakePool(FakeSftp())
+
+    def fail_after_request(*args, **kwargs):
+        cancellation.request()
+        raise error
+
+    monkeypatch.setattr(upload_cli, "upload_file", fail_after_request)
+
+    outcome = _upload_one(pool, cancellation, local_file)
+
+    assert outcome.status == "cancelled"
+    assert outcome.error is None
+
+
+def test_upload_one_converts_closed_pool_after_cancellation(tmp_path: Path):
+    local_file = _make_local_file(tmp_path)
+    cancellation = UploadCancellation()
+
+    def get_from_closed_pool():
+        cancellation.request()
+        raise SftpPoolClosedError("SFTP 连接池已关闭")
+
+    pool = FakePool(FakeSftp(), on_get=get_from_closed_pool)
+
+    outcome = _upload_one(pool, cancellation, local_file)
+
+    assert outcome.status == "cancelled"
+    assert outcome.error is None

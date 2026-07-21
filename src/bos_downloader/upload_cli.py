@@ -10,11 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional
 
+import paramiko
 from tqdm import tqdm
 
 from bos_downloader.config import load_sftp_config_from_env
 from bos_downloader.local_walker import LocalFile, walk_local_files
-from bos_downloader.sftp_client import ThreadLocalSftpPool
+from bos_downloader.sftp_client import SftpPoolClosedError, ThreadLocalSftpPool
 from bos_downloader.upload_cancellation import UploadCancellation, UploadCancelledError
 from bos_downloader.upload_progress import UploadProgress
 from bos_downloader.uploader import RemoteDirectoryCache, upload_file
@@ -22,6 +23,14 @@ from bos_downloader.uploader import RemoteDirectoryCache, upload_file
 DEFAULT_WORKERS = 15
 MAX_WORKERS = 64
 _PROGRESS_REFRESH_SECONDS = 0.1
+_CANCELLED_EXCEPTIONS = (
+    UploadCancelledError,
+    SftpPoolClosedError,
+    EOFError,
+    ConnectionError,
+    TimeoutError,
+    paramiko.SSHException,
+)
 
 
 @dataclass(frozen=True)
@@ -72,11 +81,11 @@ def _upload_one(
             expected_size=local_file.size,
         )
         return UploadOutcome(rel_path, status)
-    except UploadCancelledError:
-        return UploadOutcome(rel_path, "cancelled")
-    except Exception as exc:  # noqa: BLE001 - 单文件失败不应中断整体
+    except _CANCELLED_EXCEPTIONS as exc:
         if cancellation.is_cancelled:
             return UploadOutcome(rel_path, "cancelled")
+        return UploadOutcome(rel_path, "failed", str(exc))
+    except Exception as exc:  # noqa: BLE001 - 单文件失败不应中断整体
         return UploadOutcome(rel_path, "failed", str(exc))
 
 

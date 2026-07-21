@@ -834,3 +834,16 @@ def test_close_all_waits_for_opening_cleanup_failure_and_keeps_client(
     pool.close_all()
     assert client.close_calls == 3
     assert pool._all == []
+
+
+def test_get_after_close_raises_specific_pool_error(monkeypatch):
+    monkeypatch.setattr(
+        sftp_client,
+        "open_sftp",
+        lambda cfg: SimpleNamespace(close=lambda: None),
+    )
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+    pool.close_all()
+
+    with pytest.raises(sftp_client.SftpPoolClosedError):
+        pool.get()
