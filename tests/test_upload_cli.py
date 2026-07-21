@@ -22,6 +22,13 @@ def test_main_forwards_explicit_workers(monkeypatch):
     assert seen == [("D:/data/myfolder", None, 7)]
 
 
+def test_main_propagates_cancelled_exit_code(monkeypatch):
+    monkeypatch.setattr(upload_cli, "run", lambda source, remote, workers: 130)
+
+    result = upload_cli.main(["--src", "D:/data/myfolder"])
+
+    assert result == 130
+
 
 def test_main_rejects_workers_above_limit(capsys):
     with pytest.raises(SystemExit):

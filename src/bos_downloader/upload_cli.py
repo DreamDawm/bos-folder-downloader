@@ -31,6 +31,7 @@ _CANCELLED_EXCEPTIONS = (
     TimeoutError,
     socket.timeout,
 )
+_WATCHDOG_JOIN_TIMEOUT_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,12 @@ def _update_postfix(bar, counts: Dict[str, int], progress: UploadProgress) -> No
         progress.record_ui_error(exc)
 
 
+def _cancel_pending(pending: set[Future[UploadOutcome]]) -> None:
+    """取消尚未开始执行的上传任务。"""
+    for future in tuple(pending):
+        future.cancel()
+
+
 def _submit_next(
     executor: ThreadPoolExecutor,
     files: Iterator[LocalFile],
@@ -131,6 +138,8 @@ def _submit_next(
     cancellation: UploadCancellation,
 ) -> None:
     while len(pending) < limit:
+        if cancellation.is_cancelled:
+            return
         try:
             local_file = next(files)
         except StopIteration:
@@ -160,10 +169,10 @@ def _run_futures(
     progress: UploadProgress,
     bar,
     cancellation: UploadCancellation,
+    pending: set[Future[UploadOutcome]],
 ) -> Dict[str, int]:
     counts = {"done": 0, "skipped": 0, "failed": 0, "cancelled": 0}
     file_iterator = iter(files)
-    pending: set[Future[UploadOutcome]] = set()
     window = max(1, workers * 2)
     _submit_next(
         executor,
@@ -178,11 +187,13 @@ def _run_futures(
         cancellation,
     )
     while pending:
-        completed, pending = wait(
+        completed, remaining = wait(
             pending,
             timeout=_PROGRESS_REFRESH_SECONDS,
             return_when=FIRST_COMPLETED,
         )
+        pending.clear()
+        pending.update(remaining)
         progress.flush(bar)
         for future in completed:
             _collect_outcome(future.result(), counts, progress)
@@ -201,6 +212,29 @@ def _run_futures(
         )
     progress.flush(bar)
     return counts
+
+
+def _cancel_upload(
+    executor: ThreadPoolExecutor,
+    pool: ThreadLocalSftpPool,
+    cancellation: UploadCancellation,
+    pending: set[Future[UploadOutcome]],
+) -> int:
+    """按固定顺序取消任务并清理上传资源。"""
+    print("收到 Ctrl+C，正在取消上传…", file=sys.stderr, flush=True)
+    cancellation.request()
+    watchdog = cancellation.start_watchdog()
+    _cancel_pending(pending)
+    executor.shutdown(wait=False, cancel_futures=True)
+    try:
+        pool.close_all()
+    except Exception as exc:  # noqa: BLE001 - 取消时资源关闭失败仍返回 130
+        print(f"警告：关闭 SFTP 连接失败：{exc}", file=sys.stderr)
+    executor.shutdown(wait=True, cancel_futures=True)
+    cancellation.mark_cleanup_complete()
+    watchdog.join(timeout=_WATCHDOG_JOIN_TIMEOUT_SECONDS)
+    print("上传已取消，退出码 130", file=sys.stderr, flush=True)
+    return 130
 
 
 def run(
@@ -224,31 +258,39 @@ def run(
     directory_cache = RemoteDirectoryCache()
     progress = UploadProgress(total_bytes)
     cancellation = UploadCancellation()
+    pending: set[Future[UploadOutcome]] = set()
+    executor = ThreadPoolExecutor(max_workers=workers)
     print(f"共 {len(files)} 个文件，{workers} 线程并发上传到 {remote_base} ...")
 
     try:
-        with (
-            ThreadPoolExecutor(max_workers=workers) as executor,
-            tqdm(
-                total=total_bytes,
-                unit="B",
-                unit_scale=True,
-                desc="已处理字节",
-            ) as bar,
-        ):
-            counts = _run_futures(
-                executor,
-                files,
-                workers,
-                pool,
-                remote_base,
-                source_folder,
-                directory_cache,
-                progress,
-                bar,
-                cancellation,
-            )
-    finally:
+        with tqdm(
+            total=total_bytes,
+            unit="B",
+            unit_scale=True,
+            desc="已处理字节",
+        ) as bar:
+            try:
+                counts = _run_futures(
+                    executor,
+                    files,
+                    workers,
+                    pool,
+                    remote_base,
+                    source_folder,
+                    directory_cache,
+                    progress,
+                    bar,
+                    cancellation,
+                    pending=pending,
+                )
+            except KeyboardInterrupt:
+                return _cancel_upload(executor, pool, cancellation, pending)
+    except BaseException:
+        executor.shutdown(wait=True)
+        pool.close_all()
+        raise
+    else:
+        executor.shutdown(wait=True)
         pool.close_all()
 
     if progress.ui_error is not None:
