@@ -356,3 +356,209 @@ def test_close_all_closes_every_connection(monkeypatch):
     pool.close_all()
 
     assert len(closed) == 2
+
+
+def test_close_all_is_idempotent_and_marks_pool_closed(monkeypatch):
+    close_calls = []
+
+    def fake_open(cfg):
+        client = SimpleNamespace()
+        client.close = lambda: close_calls.append(client)
+        return client
+
+    monkeypatch.setattr(sftp_client, "open_sftp", fake_open)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+    pool.get()
+
+    pool.close_all()
+    pool.close_all()
+
+    assert pool._closed is True
+    assert pool._all == []
+    assert len(close_calls) == 1
+
+
+def test_get_after_close_does_not_open_a_connection(monkeypatch):
+    open_calls = []
+
+    def fake_open(cfg):
+        open_calls.append(cfg)
+        return SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(sftp_client, "open_sftp", fake_open)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+    pool.close_all()
+
+    with pytest.raises(RuntimeError, match="^SFTP 连接池已关闭$"):
+        pool.get()
+
+    assert open_calls == []
+
+
+def test_get_rejects_existing_thread_local_client_after_close(monkeypatch):
+    open_calls = []
+
+    def fake_open(cfg):
+        client = SimpleNamespace(close=lambda: None)
+        open_calls.append(client)
+        return client
+
+    monkeypatch.setattr(sftp_client, "open_sftp", fake_open)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+    client = pool.get()
+    pool.close_all()
+
+    with pytest.raises(RuntimeError, match="^SFTP 连接池已关闭$"):
+        pool.get()
+
+    assert open_calls == [client]
+
+
+def test_close_all_closes_new_client_when_connection_races_with_close(
+    monkeypatch,
+):
+    open_started = threading.Event()
+    release_open = threading.Event()
+    created = []
+    thread_errors = []
+
+    def fake_open(cfg):
+        client = SimpleNamespace(close_calls=0)
+
+        def close():
+            client.close_calls += 1
+
+        client.close = close
+        created.append(client)
+        open_started.set()
+        assert release_open.wait(timeout=2)
+        return client
+
+    monkeypatch.setattr(sftp_client, "open_sftp", fake_open)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+
+    def worker():
+        try:
+            pool.get()
+        except Exception as exc:
+            thread_errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert open_started.wait(timeout=2)
+
+    pool.close_all()
+    release_open.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert len(thread_errors) == 1
+    assert str(thread_errors[0]) == "SFTP 连接池已关闭"
+    assert created[0].close_calls == 1
+    assert pool._all == []
+
+
+def test_close_all_attempts_other_clients_after_one_close_fails(monkeypatch):
+    first_ready = threading.Event()
+    second_can_connect = threading.Event()
+    created = []
+    thread_errors = []
+    first_close_error = RuntimeError("first close failed")
+
+    def fake_open(cfg):
+        client = SimpleNamespace(close_calls=0)
+        if not created:
+            client.close_error = first_close_error
+        else:
+            client.close_error = None
+        created.append(client)
+        if len(created) == 1:
+            first_ready.set()
+
+        def close():
+            client.close_calls += 1
+            if client.close_error is not None:
+                raise client.close_error
+
+        client.close = close
+        return client
+
+    monkeypatch.setattr(sftp_client, "open_sftp", fake_open)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+
+    def first_worker():
+        try:
+            pool.get()
+        except Exception as exc:
+            thread_errors.append(exc)
+
+    def second_worker():
+        try:
+            assert first_ready.wait(timeout=2)
+            second_can_connect.set()
+            pool.get()
+        except Exception as exc:
+            thread_errors.append(exc)
+
+    first_thread = threading.Thread(target=first_worker)
+    second_thread = threading.Thread(target=second_worker)
+    first_thread.start()
+    second_thread.start()
+    assert second_can_connect.wait(timeout=2)
+    first_thread.join(timeout=2)
+    second_thread.join(timeout=2)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert thread_errors == []
+    assert len(created) == 2
+
+    with pytest.raises(RuntimeError) as exc_info:
+        pool.close_all()
+
+    assert str(exc_info.value) == "关闭 SFTP 连接失败"
+    assert exc_info.value.__cause__ is first_close_error
+    assert [client.close_calls for client in created] == [1, 1]
+
+
+def test_close_all_closes_transport_before_client(monkeypatch):
+    events = []
+    transport = SimpleNamespace(close=lambda: events.append("transport"))
+    client = SimpleNamespace(
+        _bos_transport=transport,
+        close=lambda: events.append("client"),
+    )
+
+    monkeypatch.setattr(sftp_client, "open_sftp", lambda cfg: client)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+    pool.get()
+
+    pool.close_all()
+
+    assert events == ["transport", "client"]
+
+
+def test_close_all_closes_client_when_transport_close_fails(monkeypatch):
+    events = []
+    transport_error = RuntimeError("transport close failed")
+
+    def close_transport():
+        events.append("transport")
+        raise transport_error
+
+    transport = SimpleNamespace(close=close_transport)
+    client = SimpleNamespace(
+        _bos_transport=transport,
+        close=lambda: events.append("client"),
+    )
+
+    monkeypatch.setattr(sftp_client, "open_sftp", lambda cfg: client)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+    pool.get()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        pool.close_all()
+
+    assert str(exc_info.value) == "关闭 SFTP 连接失败"
+    assert exc_info.value.__cause__ is transport_error
+    assert events == ["transport", "client"]
