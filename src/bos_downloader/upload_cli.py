@@ -226,12 +226,23 @@ def _cancel_upload(
     watchdog = cancellation.start_watchdog()
     _cancel_pending(pending)
     executor.shutdown(wait=False, cancel_futures=True)
+    close_error = None
     try:
         pool.close_all()
-    except Exception as exc:  # noqa: BLE001 - 取消时资源关闭失败仍返回 130
-        print(f"警告：关闭 SFTP 连接失败：{exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - 取消时先记录并在等待线程后重试
+        close_error = exc
     executor.shutdown(wait=True, cancel_futures=True)
-    cancellation.mark_cleanup_complete()
+    if close_error is not None:
+        try:
+            pool.close_all()
+        except Exception as exc:  # noqa: BLE001 - 看门狗负责最终兜底退出
+            close_error = exc
+        else:
+            close_error = None
+    if close_error is None:
+        cancellation.mark_cleanup_complete()
+    else:
+        print(f"警告：关闭 SFTP 连接失败：{close_error}", file=sys.stderr)
     watchdog.join(timeout=_WATCHDOG_JOIN_TIMEOUT_SECONDS)
     print("上传已取消，退出码 130", file=sys.stderr, flush=True)
     return 130
@@ -286,8 +297,14 @@ def run(
             except KeyboardInterrupt:
                 return _cancel_upload(executor, pool, cancellation, pending)
     except BaseException:
-        executor.shutdown(wait=True)
-        pool.close_all()
+        try:
+            executor.shutdown(wait=True)
+        except BaseException:  # noqa: BLE001 - 清理失败不能覆盖原始异常
+            pass
+        try:
+            pool.close_all()
+        except BaseException:  # noqa: BLE001 - 清理失败不能覆盖原始异常
+            pass
         raise
     else:
         executor.shutdown(wait=True)

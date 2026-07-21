@@ -763,10 +763,11 @@ def test_run_keyboard_interrupt_returns_130_when_pool_close_fails(
         ("shutdown", False, True),
         "pool close",
         ("shutdown", True, True),
-        "cleanup complete",
+        "pool close",
         "watchdog join",
     ]
-    assert "警告：关闭 SFTP 连接失败：模拟关闭失败" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert captured.err.count("警告：关闭 SFTP 连接失败") == 1
 
 
 def test_run_normal_path_shuts_executor_before_pool(tmp_path: Path, monkeypatch):
@@ -804,3 +805,141 @@ def test_run_normal_path_shuts_executor_before_pool(tmp_path: Path, monkeypatch)
 
     assert upload_cli.run(str(src), workers=1) == 0
     assert events == [("shutdown", True, False), "pool close"]
+
+
+class CleanupWatchdog:
+    def __init__(self, events):
+        self.events = events
+        self.active = True
+
+    def join(self, timeout=None):
+        self.events.append(("watchdog join", timeout))
+
+
+class CleanupCancellation:
+    def __init__(self, events):
+        self.events = events
+        self.cleanup_marked = False
+        self.watchdog = CleanupWatchdog(events)
+
+    def request(self):
+        self.events.append("request")
+
+    def start_watchdog(self):
+        self.events.append("watchdog")
+        return self.watchdog
+
+    def mark_cleanup_complete(self):
+        self.events.append("cleanup complete")
+        self.cleanup_marked = True
+        self.watchdog.active = False
+
+
+class CleanupExecutor:
+    def __init__(self, events, shutdown_error=None):
+        self.events = events
+        self.shutdown_error = shutdown_error
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        self.events.append(("shutdown", wait, cancel_futures))
+        if self.shutdown_error is not None:
+            raise self.shutdown_error
+
+
+class SequenceClosePool:
+    def __init__(self, events, errors):
+        self.events = events
+        self.errors = list(errors)
+        self.close_calls = 0
+
+    def close_all(self):
+        self.close_calls += 1
+        self.events.append(("pool close", self.close_calls))
+        error = self.errors.pop(0) if self.errors else None
+        if error is not None:
+            raise error
+
+
+def test_cancel_upload_retries_pool_after_executor_wait(tmp_path: Path, capsys):
+    events = []
+    cancellation = CleanupCancellation(events)
+    executor = CleanupExecutor(events)
+    pool = SequenceClosePool(events, [RuntimeError("首次关闭失败")])
+
+    result = upload_cli._cancel_upload(executor, pool, cancellation, set())
+
+    assert result == 130
+    assert pool.close_calls == 2
+    assert cancellation.cleanup_marked is True
+    assert cancellation.watchdog.active is False
+    assert events == [
+        "request",
+        "watchdog",
+        ("shutdown", False, True),
+        ("pool close", 1),
+        ("shutdown", True, True),
+        ("pool close", 2),
+        "cleanup complete",
+        ("watchdog join", 0.1),
+    ]
+    assert "关闭 SFTP 连接失败" not in capsys.readouterr().err
+
+
+def test_cancel_upload_leaves_watchdog_active_after_second_pool_failure(capsys):
+    events = []
+    cancellation = CleanupCancellation(events)
+    executor = CleanupExecutor(events)
+    pool = SequenceClosePool(
+        events,
+        [RuntimeError("首次关闭失败"), RuntimeError("重试关闭失败")],
+    )
+
+    result = upload_cli._cancel_upload(executor, pool, cancellation, set())
+
+    assert result == 130
+    assert pool.close_calls == 2
+    assert cancellation.cleanup_marked is False
+    assert cancellation.watchdog.active is True
+    assert events == [
+        "request",
+        "watchdog",
+        ("shutdown", False, True),
+        ("pool close", 1),
+        ("shutdown", True, True),
+        ("pool close", 2),
+        ("watchdog join", 0.1),
+    ]
+    captured = capsys.readouterr()
+    assert captured.err.count("警告：关闭 SFTP 连接失败") == 1
+    assert "重试关闭失败" in captured.err
+
+
+def test_non_keyboard_interrupt_cleanup_attempts_both_and_reraises_original(
+    tmp_path: Path, monkeypatch
+):
+    src = tmp_path / "myfolder"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"a")
+    events = []
+    primary_error = RuntimeError("上传主异常")
+    executor = CleanupExecutor(events, RuntimeError("executor关闭异常"))
+    pool = SequenceClosePool(events, [])
+
+    def raise_primary(*args, **kwargs):
+        raise primary_error
+
+    monkeypatch.setattr(
+        upload_cli,
+        "load_sftp_config_from_env",
+        lambda: SimpleNamespace(remote_base="/base"),
+    )
+    monkeypatch.setattr(upload_cli, "ThreadLocalSftpPool", lambda cfg: pool)
+    monkeypatch.setattr(upload_cli, "ThreadPoolExecutor", lambda max_workers: executor)
+    monkeypatch.setattr(upload_cli, "tqdm", RecordingBar)
+    monkeypatch.setattr(upload_cli, "_run_futures", raise_primary)
+
+    with pytest.raises(RuntimeError) as raised:
+        upload_cli.run(str(src), workers=1)
+
+    assert raised.value is primary_error
+    assert events == [("shutdown", True, False), ("pool close", 1)]
