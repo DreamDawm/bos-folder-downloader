@@ -7,8 +7,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from bos_downloader import upload_cli
+from bos_downloader.local_walker import LocalFile
+from bos_downloader.upload_cancellation import UploadCancellation
+from bos_downloader.upload_progress import UploadProgress
+from bos_downloader.uploader import RemoteDirectoryCache
 
 
 class FakeSftp:
@@ -53,11 +58,18 @@ class FakeSftp:
 
 
 class FakePool:
-    def __init__(self, client):
+    def __init__(self, client, on_get=None):
         self._client = client
+        self._on_get = on_get
+        self._lock = threading.Lock()
+        self.get_calls = 0
         self.closed = False
 
     def get(self):
+        with self._lock:
+            self.get_calls += 1
+        if self._on_get is not None:
+            self._on_get()
         return self._client
 
     def close_all(self):
@@ -65,7 +77,7 @@ class FakePool:
 
 
 class RecordingBar:
-    instances = []
+    instances: list["RecordingBar"] = []
 
     def __init__(self, total, **kwargs):
         self.total = total
@@ -106,7 +118,8 @@ def _patch(monkeypatch, client, record_bar=False):
     """让 run() 使用注入的 FakeSftp 与 FakePool。"""
     pool = FakePool(client)
     monkeypatch.setattr(
-        upload_cli, "load_sftp_config_from_env",
+        upload_cli,
+        "load_sftp_config_from_env",
         lambda: SimpleNamespace(remote_base="/base"),
     )
     monkeypatch.setattr(upload_cli, "ThreadLocalSftpPool", lambda cfg: pool)
@@ -285,9 +298,7 @@ def test_uses_total_bytes_and_aggregates_upload_callbacks(tmp_path: Path, monkey
     assert bar.kwargs["unit_scale"] is True
 
 
-def test_silences_done_and_skipped_but_keeps_summary(
-    tmp_path: Path, monkeypatch, capsys
-):
+def test_silences_done_and_skipped_but_keeps_summary(tmp_path: Path, monkeypatch, capsys):
     src = tmp_path / "myfolder"
     src.mkdir()
     (src / "done.txt").write_bytes(b"done")
@@ -355,3 +366,107 @@ def test_directory_cache_avoids_repeating_parent_mkdir(tmp_path: Path, monkeypat
 
     assert client.mkdir_calls.count("/base") == 1
     assert client.mkdir_calls.count("/base/myfolder") == 1
+
+
+def _make_local_file(tmp_path: Path) -> LocalFile:
+    local_path = tmp_path / "a.txt"
+    local_path.write_bytes(b"data")
+    return LocalFile(local_path, "a.txt", 4)
+
+
+def _upload_one(
+    pool: Any, cancellation: UploadCancellation, local_file: LocalFile
+) -> upload_cli.UploadOutcome:
+    return upload_cli._upload_one(
+        pool,
+        "/base",
+        "myfolder",
+        RemoteDirectoryCache(),
+        UploadProgress(local_file.size),
+        cancellation,
+        local_file,
+    )
+
+
+def test_upload_one_does_not_get_connection_when_pre_cancelled(tmp_path: Path):
+    local_file = _make_local_file(tmp_path)
+    cancellation = UploadCancellation()
+    cancellation.request()
+    pool = FakePool(FakeSftp())
+
+    outcome = _upload_one(pool, cancellation, local_file)
+
+    assert outcome.status == "cancelled"
+    assert pool.get_calls == 0
+
+
+def test_upload_one_checks_cancellation_after_get_before_upload(tmp_path: Path, monkeypatch):
+    local_file = _make_local_file(tmp_path)
+    cancellation = UploadCancellation()
+    pool = FakePool(FakeSftp(), on_get=cancellation.request)
+    upload_calls = []
+    monkeypatch.setattr(
+        upload_cli,
+        "upload_file",
+        lambda *args, **kwargs: upload_calls.append((args, kwargs)),
+    )
+
+    outcome = _upload_one(pool, cancellation, local_file)
+
+    assert outcome.status == "cancelled"
+    assert pool.get_calls == 1
+    assert upload_calls == []
+
+
+def test_upload_one_returns_cancelled_when_connection_closes_after_cancel(
+    tmp_path: Path,
+):
+    local_file = _make_local_file(tmp_path)
+    cancellation = UploadCancellation()
+
+    def get_and_close():
+        cancellation.request()
+        raise ConnectionError("连接已关闭")
+
+    pool = FakePool(FakeSftp(), on_get=get_and_close)
+
+    outcome = _upload_one(pool, cancellation, local_file)
+
+    assert outcome.status == "cancelled"
+    assert outcome.error is None
+
+
+def test_upload_one_returns_failed_for_uncancelled_exception(tmp_path: Path, monkeypatch):
+    local_file = _make_local_file(tmp_path)
+    cancellation = UploadCancellation()
+    pool = FakePool(FakeSftp())
+    monkeypatch.setattr(
+        upload_cli,
+        "upload_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("模拟上传失败")),
+    )
+
+    outcome = _upload_one(pool, cancellation, local_file)
+
+    assert outcome.status == "failed"
+    assert outcome.error == "模拟上传失败"
+
+
+def test_collect_cancelled_counts_without_failure_log(capsys):
+    counts = {"done": 0, "skipped": 0, "failed": 0, "cancelled": 0}
+    outcome = upload_cli.UploadOutcome("myfolder/a.txt", "cancelled", "上传已取消")
+
+    upload_cli._collect_outcome(outcome, counts, UploadProgress(0))
+
+    captured = capsys.readouterr()
+    assert counts == {"done": 0, "skipped": 0, "failed": 0, "cancelled": 1}
+    assert "[失败]" not in captured.err
+
+
+def test_postfix_includes_cancelled_count():
+    bar = RecordingBar(total=0)
+    counts = {"done": 1, "skipped": 2, "failed": 3, "cancelled": 4}
+
+    upload_cli._update_postfix(bar, counts, UploadProgress(0))
+
+    assert bar.postfix == {"完成": 1, "跳过": 2, "失败": 3, "取消": 4}
