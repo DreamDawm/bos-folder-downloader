@@ -1,5 +1,6 @@
 """pipeline 单组与编排测试。"""
 import logging
+import stat
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,13 +58,19 @@ class FakeSftp:
         self._failing = set(failing_put or set())
         self._lock = threading.Lock()
         self.existing = {}
+        self.directories = set()
         self.put_calls = {}
 
     def stat(self, path):
         with self._lock:
             if path in self.existing:
                 return SimpleNamespace(st_size=self.existing[path])
-        raise IOError("No such file")
+            if path in self.directories:
+                return SimpleNamespace(st_size=0, st_mode=stat.S_IFDIR | 0o755)
+        raise FileNotFoundError(path)
+
+    def lstat(self, path):
+        return self.stat(path)
 
     def put(self, localpath, remotepath, callback=None, confirm=True):
         if remotepath in self._failing:
@@ -73,7 +80,10 @@ class FakeSftp:
             self.existing[remotepath] = Path(localpath).stat().st_size
 
     def mkdir(self, path, mode=511):
-        raise IOError("已存在")
+        with self._lock:
+            if path in self.directories:
+                raise FileExistsError(path)
+            self.directories.add(path)
 
 
 class FakePool:
