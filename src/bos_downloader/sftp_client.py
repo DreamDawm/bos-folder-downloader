@@ -15,6 +15,11 @@ import paramiko
 
 from bos_downloader.config import SftpConfig
 
+SSH_HANDSHAKE_TIMEOUT = 10.0
+SSH_AUTH_TIMEOUT = 10.0
+SFTP_CHANNEL_TIMEOUT = 30.0
+SSH_KEEPALIVE_INTERVAL = 30
+
 
 class SftpLike(Protocol):
     """上传所需的最小 SFTP 接口,便于测试注入 Fake。"""
@@ -34,11 +39,19 @@ def open_sftp(cfg: SftpConfig) -> paramiko.SFTPClient:
     transport 的引用挂到返回对象上,close() 时一并关闭底层连接。
     """
     transport = paramiko.Transport((cfg.host, cfg.port))
-    transport.connect(username=cfg.username, password=cfg.password)
-    sftp = paramiko.SFTPClient.from_transport(transport)
-    if sftp is None:  # pragma: no cover - 仅在握手失败时发生
+    try:
+        transport.start_client(timeout=SSH_HANDSHAKE_TIMEOUT)
+        transport.auth_timeout = SSH_AUTH_TIMEOUT
+        transport.auth_password(cfg.username, cfg.password)
+        transport.set_keepalive(SSH_KEEPALIVE_INTERVAL)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        if sftp is None:
+            raise ConnectionError(f"无法建立到 {cfg.host}:{cfg.port} 的 SFTP 连接")
+        sftp.get_channel().settimeout(SFTP_CHANNEL_TIMEOUT)
+    except Exception:
         transport.close()
-        raise ConnectionError(f"无法建立到 {cfg.host}:{cfg.port} 的 SFTP 连接")
+        raise
+
     # 持有 transport 以便 close 时一并关闭(from_transport 不会主动关 transport)
     sftp._bos_transport = transport  # type: ignore[attr-defined]
     return sftp
