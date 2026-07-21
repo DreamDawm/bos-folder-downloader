@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
@@ -495,9 +496,13 @@ def test_upload_one_keeps_permission_error_after_cancellation(tmp_path: Path, mo
 
 @pytest.mark.parametrize(
     "error",
-    [ConnectionError("连接关闭"), paramiko.SSHException("SSH 通道关闭")],
+    [
+        ConnectionError("连接关闭"),
+        TimeoutError("请求超时"),
+        socket.timeout("socket 超时"),
+    ],
 )
-def test_upload_one_converts_cancelled_connection_errors(tmp_path: Path, monkeypatch, error):
+def test_upload_one_converts_cancelled_io_errors(tmp_path: Path, monkeypatch, error):
     local_file = _make_local_file(tmp_path)
     cancellation = UploadCancellation()
     pool = FakePool(FakeSftp())
@@ -512,6 +517,37 @@ def test_upload_one_converts_cancelled_connection_errors(tmp_path: Path, monkeyp
 
     assert outcome.status == "cancelled"
     assert outcome.error is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        paramiko.AuthenticationException("认证失败"),
+        paramiko.BadHostKeyException(
+            "host",
+            SimpleNamespace(get_base64=lambda: "actual"),
+            SimpleNamespace(get_base64=lambda: "expected"),
+        ),
+        paramiko.ChannelException(1, "通道失败"),
+    ],
+)
+def test_upload_one_keeps_paramiko_protocol_errors_after_cancellation(
+    tmp_path: Path, monkeypatch, error
+):
+    local_file = _make_local_file(tmp_path)
+    cancellation = UploadCancellation()
+    pool = FakePool(FakeSftp())
+
+    def fail_after_request(*args, **kwargs):
+        cancellation.request()
+        raise error
+
+    monkeypatch.setattr(upload_cli, "upload_file", fail_after_request)
+
+    outcome = _upload_one(pool, cancellation, local_file)
+
+    assert outcome.status == "failed"
+    assert outcome.error == str(error)
 
 
 def test_upload_one_converts_closed_pool_after_cancellation(tmp_path: Path):
