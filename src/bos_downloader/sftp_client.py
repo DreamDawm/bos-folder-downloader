@@ -8,6 +8,7 @@ ThreadLocalSftpPool 用 threading.local() 为每个工作线程惰性建立独�
 
 from __future__ import annotations
 
+import socket
 import threading
 from typing import List, Protocol
 
@@ -38,18 +39,27 @@ def open_sftp(cfg: SftpConfig) -> paramiko.SFTPClient:
 
     transport 的引用挂到返回对象上,close() 时一并关闭底层连接。
     """
-    transport = paramiko.Transport((cfg.host, cfg.port))
+    sock = socket.create_connection(
+        (cfg.host, cfg.port),
+        timeout=SSH_HANDSHAKE_TIMEOUT,
+    )
+    transport = None
     try:
+        transport = paramiko.Transport(sock)
         transport.start_client(timeout=SSH_HANDSHAKE_TIMEOUT)
         transport.auth_timeout = SSH_AUTH_TIMEOUT
         transport.auth_password(cfg.username, cfg.password)
         transport.set_keepalive(SSH_KEEPALIVE_INTERVAL)
+        transport.channel_timeout = SFTP_CHANNEL_TIMEOUT
         sftp = paramiko.SFTPClient.from_transport(transport)
         if sftp is None:
             raise ConnectionError(f"无法建立到 {cfg.host}:{cfg.port} 的 SFTP 连接")
         sftp.get_channel().settimeout(SFTP_CHANNEL_TIMEOUT)
     except Exception:
-        transport.close()
+        if transport is None:
+            sock.close()
+        else:
+            transport.close()
         raise
 
     # 持有 transport 以便 close 时一并关闭(from_transport 不会主动关 transport)
