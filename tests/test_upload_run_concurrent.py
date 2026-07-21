@@ -246,9 +246,9 @@ def test_executor_is_closed_before_sftp_pool(tmp_path: Path, monkeypatch):
     events = []
 
     class RecordingExecutor(RealThreadPoolExecutor):
-        def __exit__(self, exc_type, exc, traceback):
+        def shutdown(self, wait=True, *, cancel_futures=False):
             events.append("executor")
-            return super().__exit__(exc_type, exc, traceback)
+            return super().shutdown(wait=wait, cancel_futures=cancel_futures)
 
     class RecordingPool(FakePool):
         def close_all(self):
@@ -564,3 +564,243 @@ def test_upload_one_converts_closed_pool_after_cancellation(tmp_path: Path):
 
     assert outcome.status == "cancelled"
     assert outcome.error is None
+
+
+def test_submit_next_stops_filling_window_after_cancellation():
+    class FakeFuture:
+        pass
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.submitted = []
+
+        def submit(self, *args):
+            self.submitted.append(args)
+            cancellation.request()
+            return FakeFuture()
+
+    cancellation = UploadCancellation()
+    executor = RecordingExecutor()
+    pending = set()
+    files = iter(
+        [
+            LocalFile(Path("one.txt"), "one.txt", 1),
+            LocalFile(Path("two.txt"), "two.txt", 1),
+        ]
+    )
+
+    upload_cli._submit_next(
+        executor,
+        files,
+        pending,
+        4,
+        FakePool(FakeSftp()),
+        "/base",
+        "myfolder",
+        RemoteDirectoryCache(),
+        UploadProgress(2),
+        cancellation,
+    )
+
+    assert len(executor.submitted) == 1
+    assert len(pending) == 1
+
+
+def test_cancel_pending_calls_cancel_on_every_future():
+    class FakeFuture:
+        def __init__(self):
+            self.cancel_calls = 0
+
+        def cancel(self):
+            self.cancel_calls += 1
+            return True
+
+    futures = {FakeFuture(), FakeFuture(), FakeFuture()}
+
+    upload_cli._cancel_pending(futures)
+
+    assert [future.cancel_calls for future in futures] == [1, 1, 1]
+
+
+def test_run_keyboard_interrupt_cleans_up_in_required_order(tmp_path: Path, monkeypatch, capsys):
+    src = tmp_path / "myfolder"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"a")
+    events = []
+
+    class FakeFuture:
+        def cancel(self):
+            events.append("cancel pending")
+            return True
+
+    class FakeWatchdog:
+        def join(self, timeout=None):
+            events.append(("watchdog join", timeout))
+
+    class FakeCancellation:
+        is_cancelled = False
+
+        def request(self):
+            events.append("request")
+            self.is_cancelled = True
+            return True
+
+        def start_watchdog(self):
+            events.append("watchdog")
+            return FakeWatchdog()
+
+        def mark_cleanup_complete(self):
+            events.append("cleanup complete")
+
+    class FakeExecutor:
+        def __init__(self, max_workers):
+            assert max_workers == 1
+
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            events.append(("shutdown", wait, cancel_futures))
+
+    class RecordingPool(FakePool):
+        def close_all(self):
+            events.append("pool close")
+            super().close_all()
+
+    cancellation = FakeCancellation()
+    pool = RecordingPool(FakeSftp())
+    monkeypatch.setattr(
+        upload_cli,
+        "load_sftp_config_from_env",
+        lambda: SimpleNamespace(remote_base="/base"),
+    )
+    monkeypatch.setattr(upload_cli, "ThreadLocalSftpPool", lambda cfg: pool)
+    monkeypatch.setattr(upload_cli, "ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(upload_cli, "UploadCancellation", lambda: cancellation)
+    monkeypatch.setattr(upload_cli, "tqdm", RecordingBar)
+
+    def raise_keyboard_interrupt(*args, **kwargs):
+        kwargs["pending"].add(FakeFuture())
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(upload_cli, "_run_futures", raise_keyboard_interrupt)
+
+    result = upload_cli.run(str(src), workers=1)
+
+    assert result == 130
+    assert events[:7] == [
+        "request",
+        "watchdog",
+        "cancel pending",
+        ("shutdown", False, True),
+        "pool close",
+        ("shutdown", True, True),
+        "cleanup complete",
+    ]
+    assert events[7][0] == "watchdog join"
+    assert events[7][1] < 1
+    captured = capsys.readouterr()
+    assert "收到 Ctrl+C，正在取消上传…" in captured.err
+    assert "上传已取消，退出码 130" in captured.err
+    assert "关闭 SFTP 连接失败" not in captured.err
+
+
+def test_run_keyboard_interrupt_returns_130_when_pool_close_fails(
+    tmp_path: Path, monkeypatch, capsys
+):
+    src = tmp_path / "myfolder"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"a")
+    events = []
+
+    class FakeWatchdog:
+        def join(self, timeout=None):
+            events.append("watchdog join")
+
+    class FakeCancellation:
+        def request(self):
+            events.append("request")
+
+        def start_watchdog(self):
+            events.append("watchdog")
+            return FakeWatchdog()
+
+        def mark_cleanup_complete(self):
+            events.append("cleanup complete")
+
+    class FakeExecutor:
+        def __init__(self, max_workers):
+            pass
+
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            events.append(("shutdown", wait, cancel_futures))
+
+    class FailingPool(FakePool):
+        def close_all(self):
+            events.append("pool close")
+            raise RuntimeError("模拟关闭失败")
+
+    cancellation = FakeCancellation()
+    pool = FailingPool(FakeSftp())
+    monkeypatch.setattr(
+        upload_cli,
+        "load_sftp_config_from_env",
+        lambda: SimpleNamespace(remote_base="/base"),
+    )
+    monkeypatch.setattr(upload_cli, "ThreadLocalSftpPool", lambda cfg: pool)
+    monkeypatch.setattr(upload_cli, "ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(upload_cli, "UploadCancellation", lambda: cancellation)
+    monkeypatch.setattr(upload_cli, "tqdm", RecordingBar)
+    monkeypatch.setattr(
+        upload_cli,
+        "_run_futures",
+        lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+
+    result = upload_cli.run(str(src), workers=1)
+
+    assert result == 130
+    assert events == [
+        "request",
+        "watchdog",
+        ("shutdown", False, True),
+        "pool close",
+        ("shutdown", True, True),
+        "cleanup complete",
+        "watchdog join",
+    ]
+    assert "警告：关闭 SFTP 连接失败：模拟关闭失败" in capsys.readouterr().err
+
+
+def test_run_normal_path_shuts_executor_before_pool(tmp_path: Path, monkeypatch):
+    src = tmp_path / "myfolder"
+    src.mkdir()
+    (src / "a.txt").write_bytes(b"a")
+    events = []
+
+    class FakeExecutor:
+        def __init__(self, max_workers):
+            pass
+
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            events.append(("shutdown", wait, cancel_futures))
+
+    class RecordingPool(FakePool):
+        def close_all(self):
+            events.append("pool close")
+            super().close_all()
+
+    pool = RecordingPool(FakeSftp())
+    monkeypatch.setattr(
+        upload_cli,
+        "load_sftp_config_from_env",
+        lambda: SimpleNamespace(remote_base="/base"),
+    )
+    monkeypatch.setattr(upload_cli, "ThreadLocalSftpPool", lambda cfg: pool)
+    monkeypatch.setattr(upload_cli, "ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(upload_cli, "tqdm", RecordingBar)
+    monkeypatch.setattr(
+        upload_cli,
+        "_run_futures",
+        lambda *args, **kwargs: {"done": 1, "skipped": 0, "failed": 0, "cancelled": 0},
+    )
+
+    assert upload_cli.run(str(src), workers=1) == 0
+    assert events == [("shutdown", True, False), "pool close"]
