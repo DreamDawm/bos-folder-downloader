@@ -447,11 +447,27 @@ def test_close_all_closes_new_client_when_connection_races_with_close(
     thread.start()
     assert open_started.wait(timeout=2)
 
-    pool.close_all()
+    close_errors = []
+    close_returned = threading.Event()
+
+    def close_worker():
+        try:
+            pool.close_all()
+        except Exception as exc:
+            close_errors.append(exc)
+        finally:
+            close_returned.set()
+
+    close_thread = threading.Thread(target=close_worker)
+    close_thread.start()
+    assert not close_returned.wait(timeout=0.1)
     release_open.set()
     thread.join(timeout=2)
+    close_thread.join(timeout=2)
 
     assert not thread.is_alive()
+    assert not close_thread.is_alive()
+    assert close_errors == []
     assert len(thread_errors) == 1
     assert str(thread_errors[0]) == "SFTP 连接池已关闭"
     assert created[0].close_calls == 1
@@ -617,11 +633,11 @@ def test_racing_client_cleanup_failure_is_retriable(monkeypatch):
     release_open = threading.Event()
     thread_errors = []
     cleanup_error = RuntimeError("new client cleanup failed")
-    client = SimpleNamespace(close_calls=0)
+    client = SimpleNamespace(close_calls=0, should_fail=True)
 
     def close():
         client.close_calls += 1
-        if client.close_calls == 1:
+        if client.should_fail:
             raise cleanup_error
 
     client.close = close
@@ -643,18 +659,38 @@ def test_racing_client_cleanup_failure_is_retriable(monkeypatch):
     thread = threading.Thread(target=worker)
     thread.start()
     assert open_started.wait(timeout=2)
-    pool.close_all()
+
+    close_errors = []
+    close_returned = threading.Event()
+
+    def close_worker():
+        try:
+            pool.close_all()
+        except Exception as exc:
+            close_errors.append(exc)
+        finally:
+            close_returned.set()
+
+    close_thread = threading.Thread(target=close_worker)
+    close_thread.start()
+    assert not close_returned.wait(timeout=0.1)
     release_open.set()
     thread.join(timeout=2)
+    close_thread.join(timeout=2)
 
     assert not thread.is_alive()
+    assert not close_thread.is_alive()
     assert len(thread_errors) == 1
     assert str(thread_errors[0]) == "SFTP 连接池已关闭"
     assert thread_errors[0].__cause__ is cleanup_error
+    assert len(close_errors) == 1
+    assert str(close_errors[0]) == "关闭 SFTP 连接失败"
+    assert close_errors[0].__cause__ is cleanup_error
     assert pool._all == [client]
 
+    client.should_fail = False
     pool.close_all()
-    assert client.close_calls == 2
+    assert client.close_calls == 3
     assert pool._all == []
 
 
@@ -668,9 +704,133 @@ def test_open_sftp_preserves_original_error_when_cleanup_also_fails(monkeypatch)
         raise cleanup_error
 
     transport.close = fail_close
-    _install_fakes(monkeypatch, transport, FakeSftp())
+    _, fake_socket = _install_fakes(monkeypatch, transport, FakeSftp())
 
     with pytest.raises(TimeoutError) as exc_info:
         sftp_client.open_sftp(_cfg())
 
     assert exc_info.value is original_error
+    assert fake_socket.close_calls == 1
+
+
+def test_close_all_waits_for_opening_connection_before_return(monkeypatch):
+    open_started = threading.Event()
+    release_open = threading.Event()
+    close_returned = threading.Event()
+    created = []
+    get_errors = []
+    close_errors = []
+
+    def fake_open(cfg):
+        client = SimpleNamespace(close_calls=0)
+
+        def close():
+            client.close_calls += 1
+
+        client.close = close
+        created.append(client)
+        open_started.set()
+        assert release_open.wait(timeout=2)
+        return client
+
+    monkeypatch.setattr(sftp_client, "open_sftp", fake_open)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+
+    def get_worker():
+        try:
+            pool.get()
+        except Exception as exc:
+            get_errors.append(exc)
+
+    def close_worker():
+        try:
+            pool.close_all()
+        except Exception as exc:
+            close_errors.append(exc)
+        finally:
+            close_returned.set()
+
+    get_thread = threading.Thread(target=get_worker)
+    close_thread = threading.Thread(target=close_worker)
+    get_thread.start()
+    assert open_started.wait(timeout=2)
+    close_thread.start()
+
+    assert not close_returned.wait(timeout=0.1)
+    release_open.set()
+    get_thread.join(timeout=2)
+    close_thread.join(timeout=2)
+
+    assert not get_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert len(get_errors) == 1
+    assert str(get_errors[0]) == "SFTP 连接池已关闭"
+    assert close_errors == []
+    assert created[0].close_calls == 1
+
+
+def test_close_all_waits_for_opening_cleanup_failure_and_keeps_client(
+    monkeypatch,
+):
+    open_started = threading.Event()
+    release_open = threading.Event()
+    close_returned = threading.Event()
+    get_errors = []
+    close_errors = []
+    cleanup_error = RuntimeError("new client cleanup failed")
+    client = SimpleNamespace(close_calls=0, should_fail=True)
+
+    def close():
+        client.close_calls += 1
+        if client.should_fail:
+            raise cleanup_error
+
+    client.close = close
+
+    def fake_open(cfg):
+        open_started.set()
+        assert release_open.wait(timeout=2)
+        return client
+
+    monkeypatch.setattr(sftp_client, "open_sftp", fake_open)
+    pool = sftp_client.ThreadLocalSftpPool(_cfg())
+
+    def get_worker():
+        try:
+            pool.get()
+        except Exception as exc:
+            get_errors.append(exc)
+
+    def close_worker():
+        try:
+            pool.close_all()
+        except Exception as exc:
+            close_errors.append(exc)
+        finally:
+            close_returned.set()
+
+    get_thread = threading.Thread(target=get_worker)
+    close_thread = threading.Thread(target=close_worker)
+    get_thread.start()
+    assert open_started.wait(timeout=2)
+    close_thread.start()
+
+    assert not close_returned.wait(timeout=0.1)
+    release_open.set()
+    get_thread.join(timeout=2)
+    close_thread.join(timeout=2)
+
+    assert not get_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert len(get_errors) == 1
+    assert get_errors[0].__cause__ is cleanup_error
+    assert len(close_errors) == 1
+    assert str(close_errors[0]) == "关闭 SFTP 连接失败"
+    assert close_errors[0].__cause__ is cleanup_error
+    assert client.close_calls == 2
+    assert pool._all == [client]
+
+    client.should_fail = False
+    pool.close_all()
+    assert client.close_calls == 3
+    assert pool._all == []
