@@ -22,16 +22,15 @@ SFTP_CHANNEL_TIMEOUT = 30.0
 SSH_KEEPALIVE_INTERVAL = 30
 
 
-def _best_effort_close(resource: object) -> bool:
-    """尽力关闭资源,返回是否成功。"""
+def _best_effort_close(resource: object) -> None:
+    """尽力关闭资源。"""
     close = getattr(resource, "close", None)
     if not callable(close):
-        return False
+        return
     try:
         close()
     except Exception:
-        return False
-    return True
+        return
 
 
 def open_sftp(cfg: SftpConfig) -> paramiko.SFTPClient:
@@ -62,7 +61,11 @@ def open_sftp(cfg: SftpConfig) -> paramiko.SFTPClient:
             raise ConnectionError("SFTP channel unavailable")
         channel.settimeout(SFTP_CHANNEL_TIMEOUT)
     except Exception:
-        _best_effort_close(sock if transport is None else transport)
+        if transport is None:
+            _best_effort_close(sock)
+        else:
+            _best_effort_close(transport)
+            _best_effort_close(sock)
         raise
 
     # 持有 transport 以便 close 时一并关闭(from_transport 不会主动关 transport)
@@ -77,12 +80,14 @@ class ThreadLocalSftpPool:
         self._cfg = cfg
         self._local = threading.local()
         self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
         self._all: List[paramiko.SFTPClient] = []
+        self._opening = 0
         self._closed = False
 
     def get(self) -> paramiko.SFTPClient:
         """返回当前线程的 SFTPClient,首次访问时建连。"""
-        with self._lock:
+        with self._condition:
             if self._closed:
                 raise RuntimeError("SFTP 连接池已关闭")
             client = cast(
@@ -91,19 +96,31 @@ class ThreadLocalSftpPool:
             )
             if client is not None:
                 return client
+            self._opening += 1
 
-        client = open_sftp(self._cfg)
-        with self._lock:
-            if self._closed:
-                try:
-                    self._close_sftp(client)
-                except Exception as cleanup_error:
+        try:
+            client = open_sftp(self._cfg)
+            with self._condition:
+                if not self._closed:
+                    self._local.client = client
                     self._all.append(client)
-                    raise RuntimeError("SFTP 连接池已关闭") from cleanup_error
-                raise RuntimeError("SFTP 连接池已关闭")
-            self._local.client = client
-            self._all.append(client)
-        return client
+                    return client
+
+            cleanup_error = None
+            try:
+                self._close_sftp(client)
+            except Exception as exc:
+                cleanup_error = exc
+            with self._condition:
+                if cleanup_error is not None:
+                    self._all.append(client)
+            if cleanup_error is not None:
+                raise RuntimeError("SFTP 连接池已关闭") from cleanup_error
+            raise RuntimeError("SFTP 连接池已关闭")
+        finally:
+            with self._condition:
+                self._opening -= 1
+                self._condition.notify_all()
 
     @staticmethod
     def _close_sftp(client: paramiko.SFTPClient) -> None:
@@ -125,10 +142,12 @@ class ThreadLocalSftpPool:
 
     def close_all(self) -> None:
         """关闭所有已建立的连接(在 run() 的 finally 中调用)。"""
-        with self._lock:
-            if self._closed and not self._all:
+        with self._condition:
+            if self._closed and not self._all and self._opening == 0:
                 return
             self._closed = True
+            while self._opening:
+                self._condition.wait()
             clients = list(self._all)
             self._all.clear()
 
@@ -142,7 +161,7 @@ class ThreadLocalSftpPool:
                 if first_error is None:
                     first_error = exc
 
-        with self._lock:
+        with self._condition:
             self._all.extend(failed_clients)
         if first_error is not None:
             raise RuntimeError("关闭 SFTP 连接失败") from first_error
