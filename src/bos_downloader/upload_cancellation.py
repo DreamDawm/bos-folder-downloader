@@ -29,7 +29,6 @@ class UploadCancellation:
         self._cleanup_complete = threading.Event()
         self._watchdog_started = threading.Event()
         self._state_lock = threading.Lock()
-        self._watchdog_thread: Optional[threading.Thread] = None
 
     @property
     def is_cancelled(self) -> bool:
@@ -58,7 +57,7 @@ class UploadCancellation:
         """标记上传资源清理完成。"""
         self._cleanup_complete.set()
 
-    def start_watchdog(self) -> None:
+    def start_watchdog(self) -> threading.Thread:
         """启动一次等待清理完成的超时看门狗。"""
         with self._state_lock:
             if self._watchdog_started.is_set():
@@ -69,12 +68,17 @@ class UploadCancellation:
                 name=self._WATCHDOG_THREAD_NAME,
                 daemon=True,
             )
-            self._watchdog_thread = watchdog
             watchdog.start()
+            return watchdog
 
     def _watchdog(self) -> None:
         if self._cleanup_complete.wait(timeout=self._timeout_seconds):
             return
-        sys.stdout.flush()
-        sys.stderr.flush()
-        self._hard_exit(self._HARD_EXIT_CODE)
+        try:
+            for stream in (sys.stdout, sys.stderr):
+                try:
+                    stream.flush()
+                except Exception:  # noqa: BLE001 - 退出前尽力刷新输出
+                    continue
+        finally:
+            self._hard_exit(self._HARD_EXIT_CODE)
