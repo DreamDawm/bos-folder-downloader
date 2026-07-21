@@ -54,14 +54,18 @@ SFTP_REMOTE_BASE=/upload
 然后:
 
 ```bash
-uv run bos-upload --src D:/data/myfolder                      # 默认 5 线程
-uv run bos-upload --src D:/data/myfolder --remote-base /data  # 覆盖远端基准目录
-uv run bos-upload --src D:/data/myfolder --workers 5          # 自定义并发数
+uv run bos-upload --src D:/data/myfolder                       # 默认 15 线程
+uv run bos-upload --src D:/data/myfolder --remote-base /data   # 覆盖远端基准目录
+uv run bos-upload --src D:/data/myfolder --workers 15           # 自定义并发数
 ```
 
 - `--src` 要上传的本地文件夹;其**最后一级文件夹名**会被保留为远端根,例如 `myfolder` 上传到 `<远端基准>/myfolder/...`
 - `--remote-base` 可选,覆盖 `SFTP_REMOTE_BASE`
-- `--workers` 可选,并发上传线程数(默认 5);每个线程持有**独立** SFTP 连接(paramiko 单连接非线程安全)
+- `--workers` 可选,并发上传线程数(默认 15,最大 64);每个线程持有**独立** SFTP 连接(paramiko 单连接非线程安全)
+
+上传时按已处理字节显示总进度和实时速度;远端已存在且大小相同的文件也会计入已处理字节。为减少 10 万级小文件场景下的终端刷新开销,成功和跳过不再逐文件输出,失败仍逐文件输出,结束时统一汇总完成、跳过、失败及已处理字节。上传期间不要修改源目录中的文件。
+
+同一次 `bos-upload` 运行会缓存已确认的远端目录,避免每个文件重复执行多级 `mkdir`。
 
 远端文件**已存在且大小相同则跳过**(只比大小不比内容),否则覆盖上传。重复执行同一命令时未变动的文件会全部跳过。
 
