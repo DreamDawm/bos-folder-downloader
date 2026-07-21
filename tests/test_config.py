@@ -1,4 +1,5 @@
 import pytest
+
 from bos_downloader.config import DownloadConfig, load_config_from_env
 
 

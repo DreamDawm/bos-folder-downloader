@@ -1,6 +1,6 @@
-from bos_downloader.config import load_sftp_config_from_env
-
 import pytest
+
+from bos_downloader.config import load_sftp_config_from_env
 
 
 def _full_env():

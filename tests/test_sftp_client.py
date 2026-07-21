@@ -73,7 +73,10 @@ def test_pool_creates_distinct_client_per_thread(monkeypatch):
 
     t1 = threading.Thread(target=worker, args=("a",))
     t2 = threading.Thread(target=worker, args=("b",))
-    t1.start(); t2.start(); t1.join(); t2.join()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
 
     # 不同线程得到不同连接对象
     assert results["a"] != results["b"]

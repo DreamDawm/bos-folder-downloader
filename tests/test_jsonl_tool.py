@@ -1,20 +1,19 @@
 """测试 scripts/jsonl_tool.py 的各个功能。"""
 
-import json
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
 # 通过 sys.path 引入 scripts 目录下的 jsonl_tool
-import sys
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPTS_DIR = _PROJECT_ROOT / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-import jsonl_tool  # noqa: E402
+import jsonl_tool  # noqa: E402,I001
 
 
 # ─── 辅助函数 ────────────────────────────────────────────────
