@@ -69,26 +69,63 @@ class ThreadLocalSftpPool:
         self._local = threading.local()
         self._lock = threading.Lock()
         self._all: List[paramiko.SFTPClient] = []
+        self._closed = False
 
     def get(self) -> paramiko.SFTPClient:
         """返回当前线程的 SFTPClient,首次访问时建连。"""
-        client = getattr(self._local, "client", None)
-        if client is None:
-            client = open_sftp(self._cfg)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("SFTP 连接池已关闭")
+            client = getattr(self._local, "client", None)
+            if client is not None:
+                return client
+
+        client = open_sftp(self._cfg)
+        with self._lock:
+            if self._closed:
+                try:
+                    self._close_sftp(client)
+                except Exception:
+                    # 关闭状态错误必须保持统一,新连接已完成最佳努力清理。
+                    pass
+                raise RuntimeError("SFTP 连接池已关闭")
             self._local.client = client
-            with self._lock:
-                self._all.append(client)
+            self._all.append(client)
         return client
+
+    @staticmethod
+    def _close_sftp(client: paramiko.SFTPClient) -> None:
+        """先关闭底层 Transport,再关闭 SFTPClient。"""
+        transport = getattr(client, "_bos_transport", None)
+        first_error = None
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception as exc:
+                first_error = exc
+        try:
+            client.close()
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+        if first_error is not None:
+            raise first_error
 
     def close_all(self) -> None:
         """关闭所有已建立的连接(在 run() 的 finally 中调用)。"""
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             clients = list(self._all)
             self._all.clear()
+
+        first_error = None
         for client in clients:
-            transport = getattr(client, "_bos_transport", None)
             try:
-                client.close()
-            finally:
-                if transport is not None:
-                    transport.close()
+                self._close_sftp(client)
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise RuntimeError("关闭 SFTP 连接失败") from first_error
