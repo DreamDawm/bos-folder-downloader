@@ -4,6 +4,7 @@ import threading
 from typing import List, Union
 
 import pytest
+
 from bos_downloader.upload_cancellation import UploadCancellation, UploadCancelledError
 
 EventRecord = Union[str, int]
