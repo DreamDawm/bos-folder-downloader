@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import argparse
 import posixpath
+import socket
 import sys
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional
 
-import paramiko
 from tqdm import tqdm
 
 from bos_downloader.config import load_sftp_config_from_env
@@ -29,7 +29,7 @@ _CANCELLED_EXCEPTIONS = (
     EOFError,
     ConnectionError,
     TimeoutError,
-    paramiko.SSHException,
+    socket.timeout,
 )
 
 
