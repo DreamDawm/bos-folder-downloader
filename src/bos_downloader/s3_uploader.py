@@ -39,11 +39,12 @@ def upload_s3_item(
     current_size = item.abs_path.stat().st_size
     if current_size != item.size:
         raise SourceFileChangedError(f"源文件大小在枚举后发生变化: {item.size} -> {current_size}")
-    if remote_object_size(client, bucket, item.object_key) == item.size:
-        return "skipped"
+    existing_size = remote_object_size(client, bucket, item.object_key)
     current_size = item.abs_path.stat().st_size
     if current_size != item.size:
         raise SourceFileChangedError(f"源文件大小在枚举后发生变化: {item.size} -> {current_size}")
+    if existing_size == item.size:
+        return "skipped"
     client.upload_file(
         str(item.abs_path),
         bucket,

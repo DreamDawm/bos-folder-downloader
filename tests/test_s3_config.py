@@ -1,5 +1,6 @@
 import pytest
 
+from bos_downloader import config
 from bos_downloader.config import S3UploadConfig, load_s3_upload_config_from_env
 
 
@@ -57,3 +58,32 @@ def test_rejects_invalid_bypass_proxy():
     env["S3_BYPASS_PROXY"] = "yes"
     with pytest.raises(ValueError, match="S3_BYPASS_PROXY"):
         load_s3_upload_config_from_env(env)
+
+
+def test_explicit_environment_does_not_load_dotenv(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "load_dotenv",
+        lambda **kwargs: pytest.fail("显式 env 不应加载 .env"),
+    )
+
+    assert load_s3_upload_config_from_env(full_env()).bucket == "medical-dataset"
+
+
+def test_process_environment_has_priority_when_loading_dotenv(monkeypatch):
+    process_env = full_env()
+    process_env["S3_ACCESS_KEY_ID"] = "process-ak-marker"
+    for name, value in process_env.items():
+        monkeypatch.setenv(name, value)
+    calls = []
+
+    def fake_load_dotenv(*, override):
+        calls.append(override)
+        monkeypatch.setenv("S3_ACCESS_KEY_ID", "dotenv-ak-marker") if override else None
+
+    monkeypatch.setattr(config, "load_dotenv", fake_load_dotenv)
+
+    loaded = load_s3_upload_config_from_env()
+
+    assert calls == [False]
+    assert loaded.access_key_id == "process-ak-marker"

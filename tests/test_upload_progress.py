@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from bos_downloader.upload_progress import UploadProgress
 
 
@@ -102,4 +104,30 @@ def test_increment_callback_caps_one_file_at_expected_size():
     callback(40)
 
     progress.flush(FakeBar())
+    assert progress.processed_bytes == 50
+
+
+def test_increment_callback_ignores_negative_delta():
+    progress = UploadProgress(total=50)
+    callback = progress.increment_callback_for("a.bin", expected_size=50)
+
+    callback(-10)
+    assert progress.processed_bytes == 0
+
+    callback(20)
+    progress.flush(FakeBar())
+    assert progress.processed_bytes == 20
+
+
+def test_increment_callback_concurrent_updates_stay_within_expected_size():
+    progress = UploadProgress(total=100)
+    callback = progress.increment_callback_for("a.bin", expected_size=50)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(callback, 1) for _ in range(100)]
+        for future in futures:
+            future.result()
+
+    progress.flush(FakeBar())
+    assert 0 <= progress.processed_bytes <= 50
     assert progress.processed_bytes == 50

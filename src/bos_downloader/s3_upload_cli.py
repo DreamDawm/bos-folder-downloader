@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -65,10 +66,27 @@ def _submit_until_full(
         pending.add(executor.submit(_upload_one, client, bucket, item, progress))
 
 
-def _collect_outcome(outcome: UploadOutcome, counts: Dict[str, int]) -> None:
+def _redact_error(message: str, secrets: tuple[str, ...]) -> str:
+    redacted = message
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "<已遮蔽>")
+    return re.sub(
+        r"(?i)(authorization\s*[:=]\s*)[^\r\n]*",
+        r"\1<已遮蔽>",
+        redacted,
+    )
+
+
+def _collect_outcome(
+    outcome: UploadOutcome,
+    counts: Dict[str, int],
+    secrets: tuple[str, ...],
+) -> None:
     counts[outcome.status] += 1
     if outcome.status == "failed":
-        tqdm.write(f"[失败] {outcome.object_key}: {outcome.error}", file=sys.stderr)
+        error = _redact_error(outcome.error or "未知错误", secrets)
+        tqdm.write(f"[失败] {outcome.object_key}: {error}", file=sys.stderr)
 
 
 def _cancel_pending(pending: Set[Future[UploadOutcome]]) -> None:
@@ -81,27 +99,35 @@ def _is_plain_http(endpoint: str) -> bool:
 
 
 def run(source: str, workers: int = DEFAULT_WORKERS) -> int:
-    """并发上传 source 下的文件，返回失败文件数或取消退出码。"""
-    if not 1 <= workers <= MAX_WORKERS:
-        raise ValueError(f"--workers 必须在 1 到 {MAX_WORKERS} 之间")
-
-    config = load_s3_upload_config_from_env()
-    items = list(discover_upload_items(source))
-    if _is_plain_http(config.endpoint):
-        print("警告: S3 Endpoint 使用明文 HTTP，凭据签名和数据不会被 TLS 加密", file=sys.stderr)
-    if not items:
-        print(f"路径 {source!r} 下没有文件可上传")
-        return 0
-
-    client = create_s3_client(config)
-    progress = UploadProgress(sum(item.size for item in items))
-    counts = {"done": 0, "skipped": 0, "failed": 0}
+    """并发上传 source 下的文件，返回固定状态码或取消退出码。"""
     pending: Set[Future[UploadOutcome]] = set()
-    executor = ThreadPoolExecutor(max_workers=workers)
-    item_iterator = iter(items)
-    window = workers * 2
+    executor = None
 
     try:
+        if not 1 <= workers <= MAX_WORKERS:
+            raise ValueError(f"--workers 必须在 1 到 {MAX_WORKERS} 之间")
+
+        config = load_s3_upload_config_from_env()
+        items = list(discover_upload_items(source))
+        if _is_plain_http(config.endpoint):
+            print(
+                "警告: S3 Endpoint 使用明文 HTTP，凭据签名和数据不会被 TLS 加密",
+                file=sys.stderr,
+            )
+        if not items:
+            print(f"路径 {source!r} 下没有文件可上传")
+            return 0
+
+        client = create_s3_client(config)
+        progress = UploadProgress(sum(item.size for item in items))
+        counts = {"done": 0, "skipped": 0, "failed": 0}
+        secrets = (
+            getattr(config, "access_key_id", ""),
+            getattr(config, "secret_access_key", ""),
+        )
+        executor = ThreadPoolExecutor(max_workers=workers)
+        item_iterator = iter(items)
+        window = workers * 2
         with tqdm(
             total=progress.total,
             unit="B",
@@ -127,7 +153,7 @@ def run(source: str, workers: int = DEFAULT_WORKERS) -> int:
                 pending.update(remaining)
                 progress.flush(bar)
                 for future in completed:
-                    _collect_outcome(future.result(), counts)
+                    _collect_outcome(future.result(), counts, secrets)
                 bar.set_postfix(
                     {"完成": counts["done"], "跳过": counts["skipped"], "失败": counts["failed"]},
                     refresh=False,
@@ -144,21 +170,25 @@ def run(source: str, workers: int = DEFAULT_WORKERS) -> int:
             progress.flush(bar)
     except KeyboardInterrupt:
         _cancel_pending(pending)
-        executor.shutdown(wait=True, cancel_futures=True)
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
         print("上传已取消，退出码 130", file=sys.stderr)
         return 130
     except BaseException:
-        executor.shutdown(wait=True, cancel_futures=True)
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
         raise
     else:
-        executor.shutdown(wait=True)
+        if executor is not None:
+            executor.shutdown(wait=True)
 
     print(
         "上传结束："
         f"完成 {counts['done']},跳过 {counts['skipped']},失败 {counts['failed']}；"
+        f"总文件 {len(items)}；"
         f"已处理 {progress.processed_bytes}/{progress.total} 字节"
     )
-    return counts["failed"]
+    return 1 if counts["failed"] else 0
 
 
 def main(argv: Optional[list[str]] = None) -> int:

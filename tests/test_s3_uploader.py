@@ -81,7 +81,7 @@ def test_changed_source_is_rejected(tmp_path):
 
 def test_source_changed_during_object_check_is_rejected(tmp_path):
     item = make_item(tmp_path, b"a")
-    client = FakeS3(head=0)
+    client = FakeS3(head=item.size)
     original_head_object = client.head_object
 
     def head_object(**kwargs):
