@@ -28,6 +28,17 @@ class SftpConfig:
     remote_base: str
 
 
+@dataclass(frozen=True)
+class S3UploadConfig:
+    access_key_id: str
+    secret_access_key: str
+    endpoint: str
+    bucket: str
+    region: str
+    addressing_style: str
+    bypass_proxy: bool
+
+
 def load_config_from_env(
     env: Mapping[str, str] | None = None,
 ) -> DownloadConfig:
@@ -66,4 +77,34 @@ def load_sftp_config_from_env(
         username=source["SFTP_USERNAME"],
         password=source["SFTP_PASSWORD"],
         remote_base=source["SFTP_REMOTE_BASE"],
+    )
+
+
+def _parse_env_bool(name: str, value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError(f"{name} 必须是 true 或 false")
+
+
+def load_s3_upload_config_from_env(
+    env: Optional[Mapping[str, str]] = None,
+) -> S3UploadConfig:
+    """从环境变量映射读取 S3 兼容存储上传配置。"""
+    if env is None:
+        load_dotenv(override=False)
+    source = env if env is not None else os.environ
+    addressing_style = source["S3_ADDRESSING_STYLE"].strip().lower()
+    if addressing_style not in {"path", "virtual"}:
+        raise ValueError("S3_ADDRESSING_STYLE 必须是 path 或 virtual")
+    return S3UploadConfig(
+        access_key_id=source["S3_ACCESS_KEY_ID"],
+        secret_access_key=source["S3_SECRET_ACCESS_KEY"],
+        endpoint=source["S3_ENDPOINT"],
+        bucket=source["S3_BUCKET"],
+        region=source["S3_REGION"],
+        addressing_style=addressing_style,
+        bypass_proxy=_parse_env_bool("S3_BYPASS_PROXY", source["S3_BYPASS_PROXY"]),
     )
