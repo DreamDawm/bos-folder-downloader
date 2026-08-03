@@ -71,6 +71,34 @@ uv run bos-upload --src D:/data/myfolder --workers 15           # 自定义并�
 
 > 安全说明:当前用密码认证且不校验主机密钥,存在中间人风险,适用于可信内网。凭证只从 `.env` / 环境变量读取,绝不硬编码,也不会打印到日志。
 
+## S3 上传
+
+`s3-upload` 将本地文件或文件夹递归上传到 S3 兼容存储,使用独立的 `S3_*` 环境变量;`.env.example` 提供完整模板。复制为 `.env` 后填写以下配置,真实环境变量的优先级高于 `.env`:
+
+```dotenv
+S3_ACCESS_KEY_ID=你的S3_AK
+S3_SECRET_ACCESS_KEY=你的S3_SK
+S3_ENDPOINT=http://你的S3端点
+S3_BUCKET=你的桶名称
+S3_REGION=你的区域
+S3_ADDRESSING_STYLE=path
+S3_BYPASS_PROXY=true
+```
+
+```bash
+uv run s3-upload --src D:/data/images/a.jpg
+uv run s3-upload --src D:/data/images
+uv run s3-upload --src D:/data/images --workers 8
+```
+
+- `--src` 支持单个文件或文件夹;文件夹会递归上传全部文件。
+- `--workers` 可选,并发上传数默认 `8`,取值范围为 `1` 到 `64`。
+- `D:/data/images/a.jpg` 上传为对象 `data/images/a.jpg`;对象 Key 始终由源文件绝对路径移除盘符或根目录后生成。
+- 文件夹内同名且大小相同的对象会跳过;大小不同则覆盖上传。
+- 命令不提供 `--prefix`,不能额外指定对象 Key 前缀。
+
+> 安全说明:当前内网 Endpoint 使用明文 HTTP,凭据签名和数据不会被 TLS 加密。请只在可信内网使用;生产环境应优先配置受信任证书的 HTTPS Endpoint。凭证仅保存在 `.env` 或环境变量中,不要提交真实密钥。
+
 ## 流水线(下载→上传→删除)
 
 逐「最小子文件夹」串行处理:每个目录的文件**全部下载完**立即 SFTP 上传,
