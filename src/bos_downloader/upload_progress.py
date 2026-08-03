@@ -55,6 +55,24 @@ class UploadProgress:
 
         return callback
 
+    def increment_callback_for(
+        self, _file_id: str, expected_size: int
+    ) -> Callable[[int], None]:
+        """返回 boto3 增量字节回调，并限制单文件累计字节数。"""
+        upper_bound = max(0, expected_size)
+        recorded = 0
+        callback_lock = threading.Lock()
+
+        def callback(amount: int) -> None:
+            nonlocal recorded
+            with callback_lock:
+                accepted = min(max(0, int(amount)), upper_bound - recorded)
+                recorded += accepted
+            if accepted:
+                self._record(accepted)
+
+        return callback
+
     def _record(self, delta: int) -> None:
         with self._lock:
             remaining = max(0, self.total - self._processed_bytes)

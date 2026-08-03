@@ -78,3 +78,28 @@ def test_ui_failure_is_recorded_without_raising():
 
     assert isinstance(progress.ui_error, RuntimeError)
     assert progress.processed_bytes == 100
+
+
+def test_increment_callback_accumulates_boto3_deltas():
+    progress = UploadProgress(total=100)
+    callback = progress.increment_callback_for("a.bin", expected_size=100)
+
+    callback(20)
+    callback(30)
+    callback(50)
+
+    bar = FakeBar()
+    progress.flush(bar)
+    assert progress.processed_bytes == 100
+    assert bar.updates == [100]
+
+
+def test_increment_callback_caps_one_file_at_expected_size():
+    progress = UploadProgress(total=50)
+    callback = progress.increment_callback_for("a.bin", expected_size=50)
+
+    callback(40)
+    callback(40)
+
+    progress.flush(FakeBar())
+    assert progress.processed_bytes == 50
