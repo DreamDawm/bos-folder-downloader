@@ -15,6 +15,7 @@ dependencies = [
 bos-download = "bos_downloader.cli:main"
 bos-upload = "bos_downloader.upload_cli:main"
 bos-sync = "bos_downloader.pipeline_cli:main"
+s3-upload = "bos_downloader.s3_upload_cli:main"
 
 [dependency-groups]
 dev = [
