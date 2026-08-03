@@ -4,8 +4,10 @@
     uv run python scripts/jsonl_tool.py count data.jsonl                      # 统计总行数
     uv run python scripts/jsonl_tool.py count data.jsonl --filter status=done # 按条件过滤统计
     uv run python scripts/jsonl_tool.py head data.jsonl 10                    # 前 10 行
-    uv run python scripts/jsonl_tool.py head data.jsonl 10 --parse-meta       # 前 10 行,自动展开 JSON 字符串字段
-    uv run python scripts/jsonl_tool.py head data.jsonl 10 --parse-meta-keys meta_info,extra # 展开指定字段
+    uv run python scripts/jsonl_tool.py head data.jsonl 10 --parse-meta
+        # 前 10 行,自动展开 JSON 字符串字段
+    uv run python scripts/jsonl_tool.py head data.jsonl 10 --parse-meta-keys meta_info,extra
+        # 展开指定字段
     uv run python scripts/jsonl_tool.py tail data.jsonl 10                    # 后 10 行
     uv run python scripts/jsonl_tool.py search data.jsonl status=error        # 搜索匹配行
     uv run python scripts/jsonl_tool.py search data.jsonl status=error --max 50  # 限制输出行数
