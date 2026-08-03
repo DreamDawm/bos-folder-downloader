@@ -139,24 +139,50 @@ def test_output_never_contains_credentials(tmp_path, monkeypatch, capsys):
     assert "sensitive-sk" not in combined
 
 
-def test_submit_window_never_exceeds_twice_workers():
-    submitted = []
+def test_run_keeps_submission_window_at_twice_workers(tmp_path, monkeypatch):
+    workers = 2
+    expected_window = workers * 2
+    items = [
+        S3UploadItem(tmp_path / f"file-{index}.bin", f"data/file-{index}.bin", 1)
+        for index in range(6)
+    ]
+    cfg = SimpleNamespace(endpoint="https://s3.internal", bucket="bucket")
+    observed_pending_sizes = []
 
     class FakeExecutor:
+        def __init__(self):
+            self.submissions = []
+
         def submit(self, fn, *args):
-            future = object()
-            submitted.append(future)
+            future = Future()
+            self.submissions.append((future, args[2]))
             return future
 
-    iterator = iter([SimpleNamespace() for _ in range(10)])
-    pending = set()
+        def shutdown(self, **kwargs):
+            pass
 
-    s3_upload_cli._submit_until_full(
-        FakeExecutor(), iterator, pending, 4, object(), "bucket", object()
-    )
+    executor = FakeExecutor()
 
-    assert len(pending) == 4
-    assert len(submitted) == 4
+    def complete_pending_futures(pending, **kwargs):
+        observed_pending_sizes.append(len(pending))
+        completed = set(pending)
+        for future, item in executor.submissions:
+            if future in completed:
+                future.set_result(s3_upload_cli.UploadOutcome(item.object_key, "done"))
+        return completed, set()
+
+    monkeypatch.setattr(s3_upload_cli, "load_s3_upload_config_from_env", lambda: cfg)
+    monkeypatch.setattr(s3_upload_cli, "create_s3_client", lambda config: object())
+    monkeypatch.setattr(s3_upload_cli, "discover_upload_items", lambda source: iter(items))
+    monkeypatch.setattr(s3_upload_cli, "ThreadPoolExecutor", lambda max_workers: executor)
+    monkeypatch.setattr(s3_upload_cli, "wait", complete_pending_futures)
+    monkeypatch.setattr(s3_upload_cli, "tqdm", RecordingBar)
+
+    assert s3_upload_cli.run(str(tmp_path), workers=workers) == 0
+
+    assert max(observed_pending_sizes) == expected_window
+    assert all(size <= expected_window for size in observed_pending_sizes)
+    assert len(executor.submissions) == len(items)
 
 
 def test_main_reports_configuration_or_source_error(monkeypatch, capsys):
@@ -175,18 +201,27 @@ def test_main_propagates_cancel_exit_code(monkeypatch):
     assert s3_upload_cli.main(["--src", "D:/data"]) == 130
 
 
-def test_run_returns_130_and_cleans_up_once_when_wait_is_interrupted(tmp_path, monkeypatch, capsys):
-    source = tmp_path / "a.bin"
-    source.write_bytes(b"a")
-    item = S3UploadItem(source, "data/a.bin", 1)
+def test_run_cancellation_cancels_pending_and_stops_submissions(tmp_path, monkeypatch, capsys):
+    workers = 1
+    items = [
+        S3UploadItem(tmp_path / f"file-{index}.bin", f"data/file-{index}.bin", 1)
+        for index in range(3)
+    ]
     cfg = SimpleNamespace(endpoint="https://s3.internal", bucket="bucket")
+    interrupted = False
 
     class FakeExecutor:
         def __init__(self):
             self.shutdown_calls = []
+            self.submissions = []
+            self.submissions_after_interrupt = []
 
         def submit(self, fn, *args):
-            return Future()
+            future = Future()
+            self.submissions.append(future)
+            if interrupted:
+                self.submissions_after_interrupt.append(future)
+            return future
 
         def shutdown(self, **kwargs):
             self.shutdown_calls.append(kwargs)
@@ -194,15 +229,20 @@ def test_run_returns_130_and_cleans_up_once_when_wait_is_interrupted(tmp_path, m
     executor = FakeExecutor()
     monkeypatch.setattr(s3_upload_cli, "load_s3_upload_config_from_env", lambda: cfg)
     monkeypatch.setattr(s3_upload_cli, "create_s3_client", lambda config: object())
-    monkeypatch.setattr(s3_upload_cli, "discover_upload_items", lambda source: iter([item]))
+    monkeypatch.setattr(s3_upload_cli, "discover_upload_items", lambda source: iter(items))
     monkeypatch.setattr(s3_upload_cli, "ThreadPoolExecutor", lambda max_workers: executor)
-    monkeypatch.setattr(
-        s3_upload_cli,
-        "wait",
-        lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
-    )
+
+    def interrupt_wait(*args, **kwargs):
+        nonlocal interrupted
+        interrupted = True
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(s3_upload_cli, "wait", interrupt_wait)
     monkeypatch.setattr(s3_upload_cli, "tqdm", RecordingBar)
 
-    assert s3_upload_cli.run(str(source), workers=1) == 130
+    assert s3_upload_cli.run(str(tmp_path), workers=workers) == 130
+    assert len(executor.submissions) == workers * 2
+    assert not executor.submissions_after_interrupt
+    assert all(future.cancelled() for future in executor.submissions)
     assert executor.shutdown_calls == [{"wait": True, "cancel_futures": True}]
     assert "退出码 130" in capsys.readouterr().err
