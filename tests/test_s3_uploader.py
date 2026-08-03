@@ -65,8 +65,31 @@ def test_permission_error_is_not_treated_as_missing(tmp_path):
         upload_s3_item(client, "bucket", item)
 
 
+def test_access_denied_with_404_status_is_not_treated_as_missing(tmp_path):
+    item = make_item(tmp_path)
+    client = FakeS3(head_error=client_error("AccessDenied", 404))
+    with pytest.raises(ClientError):
+        upload_s3_item(client, "bucket", item)
+
+
 def test_changed_source_is_rejected(tmp_path):
     item = make_item(tmp_path, b"a")
     item.abs_path.write_bytes(b"changed")
     with pytest.raises(SourceFileChangedError, match="源文件大小"):
         upload_s3_item(FakeS3(head=None), "bucket", item)
+
+
+def test_source_changed_during_object_check_is_rejected(tmp_path):
+    item = make_item(tmp_path, b"a")
+    client = FakeS3(head=0)
+    original_head_object = client.head_object
+
+    def head_object(**kwargs):
+        item.abs_path.write_bytes(b"changed")
+        return original_head_object(**kwargs)
+
+    client.head_object = head_object
+
+    with pytest.raises(SourceFileChangedError, match="源文件大小"):
+        upload_s3_item(client, "bucket", item)
+    assert client.uploads == []

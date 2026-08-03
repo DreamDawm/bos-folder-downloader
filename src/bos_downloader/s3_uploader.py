@@ -23,8 +23,7 @@ def remote_object_size(client, bucket: str, key: str) -> Optional[int]:
         response = client.head_object(Bucket=bucket, Key=key)
     except ClientError as exc:
         code = str(exc.response.get("Error", {}).get("Code", ""))
-        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-        if code in _NOT_FOUND_CODES or status == 404:
+        if code in _NOT_FOUND_CODES:
             return None
         raise
     return int(response["ContentLength"])
@@ -42,6 +41,9 @@ def upload_s3_item(
         raise SourceFileChangedError(f"源文件大小在枚举后发生变化: {item.size} -> {current_size}")
     if remote_object_size(client, bucket, item.object_key) == item.size:
         return "skipped"
+    current_size = item.abs_path.stat().st_size
+    if current_size != item.size:
+        raise SourceFileChangedError(f"源文件大小在枚举后发生变化: {item.size} -> {current_size}")
     client.upload_file(
         str(item.abs_path),
         bucket,
