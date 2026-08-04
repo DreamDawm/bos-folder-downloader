@@ -216,6 +216,28 @@ def test_redact_error_redacts_authorization_values_without_breaking_structure(
     assert "test-token-marker" not in redacted
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            r'{"Authorization": "OAuth note=\"public\", token=secret-token-marker"}',
+            '{"Authorization": "<已遮蔽>"}',
+        ),
+        (
+            r"{'Authorization': 'OAuth note=\'public\', token=secret-token-marker'}",
+            "{'Authorization': '<已遮蔽>'}",
+        ),
+    ],
+)
+def test_redact_error_keeps_escaped_quotes_inside_authorization_values(
+    message, expected
+):
+    redacted = s3_upload_cli._redact_error(message, ())
+
+    assert redacted == expected
+    assert "secret-token-marker" not in redacted
+
+
 def test_many_failures_return_fixed_nonzero_exit_code(tmp_path, monkeypatch, capsys):
     path = tmp_path / "failed.bin"
     path.write_bytes(b"x")
