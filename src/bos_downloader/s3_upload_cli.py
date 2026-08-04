@@ -71,6 +71,11 @@ def _redact_error(message: str, secrets: tuple[str, ...]) -> str:
     for secret in secrets:
         if secret:
             redacted = redacted.replace(secret, "<已遮蔽>")
+    redacted = re.sub(
+        r'''(?i)(authorization["']\s*[:=]\s*)(["'])[^\r\n]*?\2''',
+        r"\1\2<已遮蔽>\2",
+        redacted,
+    )
     return re.sub(
         r"(?i)(authorization\s*[:=]\s*)[^\r\n]*",
         r"\1<已遮蔽>",

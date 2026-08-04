@@ -192,6 +192,30 @@ def test_failed_upload_output_redacts_credentials_and_authorization(
     assert "Authorization: <已遮蔽>" in captured.err
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Authorization: Bearer test-token-marker", "Authorization: <已遮蔽>"),
+        ("Authorization=Bearer test-token-marker", "Authorization=<已遮蔽>"),
+        (
+            '{"aUtHoRiZaTiOn": "Bearer test-token-marker"}',
+            '{"aUtHoRiZaTiOn": "<已遮蔽>"}',
+        ),
+        (
+            "{'Authorization': 'Bearer test-token-marker'}",
+            "{'Authorization': '<已遮蔽>'}",
+        ),
+    ],
+)
+def test_redact_error_redacts_authorization_values_without_breaking_structure(
+    message, expected
+):
+    redacted = s3_upload_cli._redact_error(message, ())
+
+    assert redacted == expected
+    assert "test-token-marker" not in redacted
+
+
 def test_many_failures_return_fixed_nonzero_exit_code(tmp_path, monkeypatch, capsys):
     path = tmp_path / "failed.bin"
     path.write_bytes(b"x")
