@@ -93,7 +93,8 @@ uv run s3-upload --src D:/data/images --workers 8
 
 - `--src` 支持单个文件或文件夹;文件夹会递归上传全部文件。
 - `--workers` 可选,并发上传数默认 `8`,取值范围为 `1` 到 `64`。
-- `D:/data/images/a.jpg` 上传为对象 `data/images/a.jpg`;对象 Key 始终由源文件绝对路径移除盘符或根目录后生成。
+- 上传文件夹时保留来源文件夹名,例如 `D:/data/一脉阳光` 下的 `2026/result.csv` 上传为对象 `一脉阳光/2026/result.csv`,不会包含上级目录 `data`。
+- 上传单个文件时保留其直接父目录名,例如 `D:/data2/国中康建/test.jpg` 上传为对象 `国中康建/test.jpg`。
 - 文件夹内同名且大小相同的对象会跳过;大小不同则覆盖上传。
 - 命令不提供 `--prefix`,不能额外指定对象 Key 前缀。
 
