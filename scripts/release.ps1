@@ -179,8 +179,15 @@ try {
     Remove-Item Env:BOS_RELEASE_PUSH -ErrorAction SilentlyContinue
 }
 
-& gh release view $tag --repo $repository *> $null
-if ($LASTEXITCODE -ne 0) {
+$releaseExists = $false
+try {
+    $ErrorActionPreference = "Continue"
+    & gh release view $tag --repo $repository *> $null
+    $releaseExists = $LASTEXITCODE -eq 0
+} finally {
+    $ErrorActionPreference = "Stop"
+}
+if (-not $releaseExists) {
     $escapedVersion = [regex]::Escape($Version)
     $match = [regex]::Match(
         $changelog,
