@@ -2,6 +2,16 @@
 
 本项目的正式版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.1] - 2026-08-07
+
+### 修复
+
+- 修复 Windows PowerShell 5.1 首次探测不存在的 GitHub Release 时提前终止发布的问题。
+
+### API、CLI 与配置兼容性
+
+- 无用户 API、CLI 或配置变更。
+
 ## [0.2.0] - 2026-08-07
 
 ### 新增

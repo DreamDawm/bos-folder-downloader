@@ -1,6 +1,6 @@
 [project]
 name = "bos-downloader"
-version = "0.2.0"
+version = "0.2.1"
 description = "递归下载百度 BOS 指定文件夹,带进度与断点续传"
 requires-python = ">=3.9"
 dependencies = [
