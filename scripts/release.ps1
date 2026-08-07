@@ -11,11 +11,9 @@ $ErrorActionPreference = "Stop"
 $tag = "v$Version"
 
 function Invoke-Git {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-
-    & git @Arguments
+    & git @args
     if ($LASTEXITCODE -ne 0) {
-        throw "git $($Arguments -join ' ') 执行失败，退出码 $LASTEXITCODE"
+        throw "git $($args -join ' ') 执行失败，退出码 $LASTEXITCODE"
     }
 }
 
