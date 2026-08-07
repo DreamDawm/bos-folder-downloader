@@ -16,8 +16,7 @@ def credentials():
 
 
 def write_config(path: Path, *, expires_days: int = 2) -> Path:
-    path.write_text(
-        """s3:
+    content = """s3:
   endpoint: http://s3.internal.example
   public_endpoint: https://s3.public.example
   bucket: medical-dataset
@@ -26,10 +25,9 @@ def write_config(path: Path, *, expires_days: int = 2) -> Path:
   bypass_proxy: true
 presigned_url:
   expires_days: {expires_days}
-""".format(expires_days=expires_days),
-        encoding="utf-8",
-        newline="\n",
-    )
+""".format(expires_days=expires_days)
+    with path.open("w", encoding="utf-8", newline="\n") as config_file:
+        config_file.write(content)
     return path
 
 
@@ -106,7 +104,8 @@ presigned_url:
 )
 def test_rejects_missing_or_invalid_yaml_fields(tmp_path, content, expected):
     config_path = tmp_path / "s3.yml"
-    config_path.write_text(content, encoding="utf-8", newline="\n")
+    with config_path.open("w", encoding="utf-8", newline="\n") as config_file:
+        config_file.write(content)
 
     with pytest.raises(ValueError, match=expected):
         load_s3_upload_config_from_env(credentials(), config_path)
