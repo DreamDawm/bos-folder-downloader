@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建并上传 Python 包
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出发布标签
+        uses: actions/checkout@v7
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v9
+
+      - name: 构建分发包
+        run: uv build
+
+      - name: 上传 GitHub Release 资产
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
