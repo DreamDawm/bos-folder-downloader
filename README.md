@@ -73,16 +73,26 @@ uv run bos-upload --src D:/data/myfolder --workers 15           # 自定义并�
 
 ## S3 上传
 
-`s3-upload` 将本地文件或文件夹递归上传到 S3 兼容存储,使用独立的 `S3_*` 环境变量;`.env.example` 提供完整模板。复制为 `.env` 后填写以下配置,真实环境变量的优先级高于 `.env`:
+`s3-upload` 将本地文件或文件夹递归上传到 S3 兼容存储。AK/SK 属于敏感凭据,保存在 `.env` 或系统环境变量中,真实环境变量的优先级高于 `.env`:
 
 ```dotenv
 S3_ACCESS_KEY_ID=你的S3_AK
 S3_SECRET_ACCESS_KEY=你的S3_SK
-S3_ENDPOINT=http://你的S3端点
-S3_BUCKET=你的桶名称
-S3_REGION=你的区域
-S3_ADDRESSING_STYLE=path
-S3_BYPASS_PROXY=true
+```
+
+其他 S3 配置统一保存在 `config/s3.yml`:
+
+```yaml
+s3:
+  endpoint: http://s3-internal.stack-region-1.cloud.bjaidata.cn
+  public_endpoint: https://s3.bjdataxxq.cn
+  bucket: medical-dataset
+  region: cn-north-1
+  addressing_style: path
+  bypass_proxy: true
+
+presigned_url:
+  expires_days: 2
 ```
 
 ```bash
@@ -98,7 +108,17 @@ uv run s3-upload --src D:/data/images --workers 8
 - 文件夹内同名且大小相同的对象会跳过;大小不同则覆盖上传。
 - 命令不提供 `--prefix`,不能额外指定对象 Key 前缀。
 
-> 安全说明:当前内网 Endpoint 使用明文 HTTP,凭据签名和数据不会被 TLS 加密。请只在可信内网使用;生产环境应优先配置受信任证书的 HTTPS Endpoint。凭证仅保存在 `.env` 或环境变量中,不要提交真实密钥。
+> 安全说明:当前内网 Endpoint 使用明文 HTTP,凭据签名和数据不会被 TLS 加密。请只在可信内网使用;生产环境应优先配置受信任证书的 HTTPS Endpoint。凭据仅保存在 `.env` 或环境变量中,不要提交真实密钥。
+
+## S3 外部访问链接
+
+`s3-url` 为桶内对象生成 SigV4 预签名 GET 下载链接。对象路径不包含桶名,不能以 `/` 开头;公网域名、桶名和有效天数均读取 `config/s3.yml`:
+
+```bash
+uv run s3-url --path "样例数据/英特雷真/30000中药医学知识.zip"
+```
+
+命令成功时仅向标准输出打印完整 URL,方便复制或在脚本中使用。`presigned_url.expires_days` 必须是正整数,程序不限制最大天数;实际有效期是否受限由 S3 兼容存储服务决定。链接生成过程不会请求 S3,因此不会检查对象是否存在。
 
 ## 流水线(下载→上传→删除)
 

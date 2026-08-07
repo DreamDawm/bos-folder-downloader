@@ -7,10 +7,12 @@ def make_config(bypass_proxy=True):
         access_key_id="test-ak",
         secret_access_key="test-sk",
         endpoint="http://s3.internal.example",
+        public_endpoint="https://s3.public.example",
         bucket="medical-dataset",
         region="stack-region-1",
         addressing_style="path",
         bypass_proxy=bypass_proxy,
+        expires_days=2,
     )
 
 
@@ -45,3 +47,16 @@ def test_client_allows_environment_proxy_when_bypass_is_false(monkeypatch):
     s3_client.create_s3_client(make_config(bypass_proxy=False))
 
     assert captured["config"].proxies is None
+
+
+def test_client_can_override_endpoint_for_public_links(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        s3_client.boto3,
+        "client",
+        lambda service, **kwargs: captured.update(kwargs),
+    )
+
+    s3_client.create_s3_client(make_config(), endpoint="https://s3.public.example")
+
+    assert captured["endpoint_url"] == "https://s3.public.example"

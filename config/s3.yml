@@ -1,0 +1,10 @@
+s3:
+  endpoint: http://s3-internal.stack-region-1.cloud.bjaidata.cn
+  public_endpoint: https://s3.bjdataxxq.cn
+  bucket: medical-dataset
+  region: cn-north-1
+  addressing_style: path
+  bypass_proxy: true
+
+presigned_url:
+  expires_days: 365
