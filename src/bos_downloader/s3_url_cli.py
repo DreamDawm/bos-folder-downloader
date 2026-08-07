@@ -6,10 +6,17 @@ import argparse
 import sys
 from typing import Optional
 
+from botocore.exceptions import BotoCoreError, ClientError
+
 from bos_downloader.config import load_s3_upload_config_from_env
 from bos_downloader.s3_client import create_s3_client
+from bos_downloader.s3_uploader import remote_object_size
 
 SECONDS_PER_DAY = 24 * 60 * 60
+
+
+class S3ObjectNotFoundError(RuntimeError):
+    """指定的桶内对象不存在。"""
 
 
 def _validate_object_key(object_key: str) -> None:
@@ -27,8 +34,13 @@ def run(object_key: str) -> int:
     config = load_s3_upload_config_from_env()
     if object_key.startswith(f"{config.bucket}/"):
         raise ValueError("对象路径不能包含配置中的桶名")
-    client = create_s3_client(config, endpoint=config.public_endpoint)
-    url = client.generate_presigned_url(
+
+    check_client = create_s3_client(config, endpoint=config.endpoint)
+    if remote_object_size(check_client, config.bucket, object_key) is None:
+        raise S3ObjectNotFoundError(f"S3 对象不存在: {config.bucket}/{object_key}")
+
+    signing_client = create_s3_client(config, endpoint=config.public_endpoint)
+    url = signing_client.generate_presigned_url(
         "get_object",
         Params={"Bucket": config.bucket, "Key": object_key},
         ExpiresIn=config.expires_days * SECONDS_PER_DAY,
@@ -44,6 +56,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         return run(args.path)
+    except S3ObjectNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (ClientError, BotoCoreError) as exc:
+        if isinstance(exc, ClientError):
+            error_name = str(exc.response.get("Error", {}).get("Code", "")) or "ClientError"
+        else:
+            error_name = type(exc).__name__
+        print(f"检查 S3 对象失败: {error_name}", file=sys.stderr)
+        return 1
     except (KeyError, ValueError) as exc:
         print(f"配置或对象路径错误: {exc}", file=sys.stderr)
         return 2
