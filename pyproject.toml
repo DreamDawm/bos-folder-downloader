@@ -9,6 +9,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "paramiko>=3.4",
     "boto3>=1.42.97",
+    "PyYAML>=6.0.2",
 ]
 
 [project.scripts]
@@ -16,6 +17,7 @@ bos-download = "bos_downloader.cli:main"
 bos-upload = "bos_downloader.upload_cli:main"
 bos-sync = "bos_downloader.pipeline_cli:main"
 s3-upload = "bos_downloader.s3_upload_cli:main"
+s3-url = "bos_downloader.s3_url_cli:main"
 
 [dependency-groups]
 dev = [

@@ -8,7 +8,7 @@ from botocore.config import Config
 from bos_downloader.config import S3UploadConfig
 
 
-def create_s3_client(cfg: S3UploadConfig):
+def create_s3_client(cfg: S3UploadConfig, endpoint: str | None = None):
     """按上传配置创建一个 S3 客户端。"""
     client_config = Config(
         signature_version="s3v4",
@@ -22,7 +22,7 @@ def create_s3_client(cfg: S3UploadConfig):
         "s3",
         aws_access_key_id=cfg.access_key_id,
         aws_secret_access_key=cfg.secret_access_key,
-        endpoint_url=cfg.endpoint,
+        endpoint_url=endpoint or cfg.endpoint,
         region_name=cfg.region,
         config=client_config,
     )
