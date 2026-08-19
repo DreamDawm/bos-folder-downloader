@@ -4,6 +4,8 @@
 
 ## 安装
 
+需要 Python 3.12 或更高版本。
+
 ```bash
 uv sync
 ```
