@@ -33,5 +33,5 @@ cli.run() → lister.list_objects_under_prefix() → 逐个 downloader.download_
 
 - 凭证(AK/SK)只从环境变量 / `.env` 读取,绝不硬编码,绝不打印到日志或异常信息中。
 - `.env` 已被 `.gitignore` 忽略,绝不提交;`.env.example` 只放占位值。
-- 兼容 Python 3.9+:模块统一 `from __future__ import annotations`,类型注解用 `Optional[...]` 而非 `... | None` 的运行期形式。
+- 兼容 Python 3.12+:模块统一 `from __future__ import annotations`,类型注解用 `Optional[...]` 而非 `... | None` 的运行期形式。
 
